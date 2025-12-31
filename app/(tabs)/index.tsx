@@ -8,8 +8,10 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { getBluetoothService, ANCSNotification } from "@/lib/bluetooth-service";
 import { getNotificationStorage } from "@/lib/notification-storage";
+import { NotificationService } from "@/lib/notification-service";
 import { PermissionsAndroid } from "react-native";
 import { Device } from "react-native-ble-plx";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function HomeScreen() {
   const colors = useColors();
@@ -60,11 +62,22 @@ export default function HomeScreen() {
       const stored = await notificationStorage.getAllNotifications();
       setNotifications(stored);
 
+      // Initialize notification service
+      await NotificationService.initialize();
+
       // Set up notification listener
       bluetoothService.onNotification(async (notification) => {
         console.log("New notification received:", notification);
         await notificationStorage.saveNotification(notification);
         setNotifications((prev) => [notification, ...prev]);
+
+        // Send system notification
+        await NotificationService.sendNotification({
+          title: notification.categoryName || "Notification",
+          body: `New ${notification.categoryName} notification`,
+          categoryName: notification.categoryName,
+          isImportant: notification.isImportant,
+        });
 
         // Haptic feedback for new notification
         if (Platform.OS !== "web") {

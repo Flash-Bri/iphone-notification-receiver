@@ -46,3 +46,16 @@
 - [x] App crashes when selecting iPhone - likely Control Point write issue
 - [x] Fix Control Point write to not crash on connection
 - [x] Make Control Point write optional/non-blocking
+
+## Phase 8: Full Notification Mirroring
+
+- [ ] Save last connected device ID to AsyncStorage for auto-reconnection
+- [ ] Auto-reconnect to saved device on app launch
+- [x] Display app version number on Settings page
+- [ ] Fetch full notification details from Data Source characteristic
+- [ ] Parse notification title, message, and app name from ANCS
+- [x] Send native push notifications to tablet notification center
+- [x] Show notifications even when app is not in foreground
+- [ ] Display app icon with notification card
+- [ ] Add category-specific styling and icons
+- [ ] Improve notification card layout to show full details

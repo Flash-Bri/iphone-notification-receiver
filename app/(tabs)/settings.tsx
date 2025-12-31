@@ -2,6 +2,7 @@ import { View, Text, ScrollView, Pressable, Platform, Switch } from "react-nativ
 import { useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
+import Constants from "expo-constants";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
@@ -123,7 +124,9 @@ export default function SettingsScreen() {
               (ANCS) protocol.
             </Text>
             <View className="mt-4 pt-4 border-t border-border">
-              <Text className="text-xs text-muted">Version 1.0.0</Text>
+              <Text className="text-xs text-muted">
+                Version {Constants.expoConfig?.version || "1.0.0"}
+              </Text>
             </View>
           </View>
         </View>

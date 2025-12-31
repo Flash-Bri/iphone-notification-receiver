@@ -59,6 +59,7 @@ const CATEGORY_NAMES: Record<CategoryID, string> = {
 export class BluetoothService {
   private manager: BleManager | null = null;
   private connectedDevice: Device | null = null;
+  private lastConnectedDeviceId: string | null = null;
   private onNotificationCallback: ((notification: ANCSNotification) => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean, deviceName?: string) => void) | null = null;
 
@@ -303,6 +304,14 @@ export class BluetoothService {
 
   getConnectedDeviceName(): string | null {
     return this.connectedDevice?.name || null;
+  }
+
+  setLastConnectedDeviceId(deviceId: string | null): void {
+    this.lastConnectedDeviceId = deviceId;
+  }
+
+  getLastConnectedDeviceId(): string | null {
+    return this.lastConnectedDeviceId;
   }
 
   destroy(): void {
