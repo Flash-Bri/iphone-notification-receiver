@@ -40,3 +40,9 @@
 - [x] Add debug logging to track notification events
 - [x] Check if we need to enable notifications on the characteristic
 - [x] Verify ANCS Control Point commands are being sent correctly
+
+## Critical Issues
+
+- [x] App crashes when selecting iPhone - likely Control Point write issue
+- [x] Fix Control Point write to not crash on connection
+- [x] Make Control Point write optional/non-blocking

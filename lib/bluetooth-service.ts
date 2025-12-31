@@ -182,7 +182,7 @@ export class BluetoothService {
     try {
       console.log("Setting up ANCS notification listener...");
 
-      // Subscribe to Notification Source characteristic first
+      // Subscribe to Notification Source characteristic
       console.log("Subscribing to Notification Source characteristic...");
       device.monitorCharacteristicForService(
         ANCS_SERVICE_UUID,
@@ -200,29 +200,41 @@ export class BluetoothService {
         }
       );
 
-      // Write to Control Point to enable notifications
+      // Send Control Point command after a delay (non-blocking)
       // This tells the iPhone we want to receive notifications
-      console.log("Sending Control Point command to enable notifications...");
-      try {
-        // Command format: [CommandID, CategoryID, CategoryBitMask]
-        // 0x00 = EnableNotificationForUID
-        // 0xFF = All categories
-        const enableAllCommand = Buffer.from([0x00, 0xff, 0xff]);
-        await device.writeCharacteristicWithResponseForService(
-          ANCS_SERVICE_UUID,
-          CONTROL_POINT_UUID,
-          enableAllCommand.toString("base64")
-        );
-        console.log("Successfully sent Control Point command to enable all notifications");
-      } catch (e) {
-        console.error("Error writing to Control Point:", e);
-        // Continue anyway - some devices might not require this
-      }
+      console.log("Scheduling Control Point initialization...");
+      setTimeout(() => {
+        this.sendControlPointCommand(device);
+      }, 1000);
 
       console.log("Successfully set up ANCS notifications");
     } catch (error) {
       console.error("Failed to setup notification listener:", error);
       throw error;
+    }
+  }
+
+  private sendControlPointCommand(device: Device): void {
+    try {
+      // Command format: [CommandID, CategoryID, CategoryBitMask]
+      // 0x00 = EnableNotificationForUID
+      // 0xFF = All categories
+      const enableAllCommand = Buffer.from([0x00, 0xff, 0xff]);
+
+      device
+        .writeCharacteristicWithoutResponseForService(
+          ANCS_SERVICE_UUID,
+          CONTROL_POINT_UUID,
+          enableAllCommand.toString("base64")
+        )
+        .then(() => {
+          console.log("Control Point command sent successfully");
+        })
+        .catch((error: any) => {
+          console.log("Control Point write not supported (this is OK):", error?.message);
+        });
+    } catch (error) {
+      console.log("Could not send Control Point command:", error);
     }
   }
 
