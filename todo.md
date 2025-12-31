@@ -32,3 +32,11 @@
 - [x] Show paired/bonded devices from system
 - [x] Combine scanned and paired devices in single list
 - [x] Handle device connection from scanned devices
+
+## Notification Reception Issues
+
+- [x] Fix ANCS notification subscription - not receiving notifications despite connected
+- [x] Verify characteristic monitoring is working correctly
+- [x] Add debug logging to track notification events
+- [x] Check if we need to enable notifications on the characteristic
+- [x] Verify ANCS Control Point commands are being sent correctly

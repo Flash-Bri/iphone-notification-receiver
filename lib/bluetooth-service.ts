@@ -1,4 +1,5 @@
 import { BleManager, Device, Characteristic } from "react-native-ble-plx";
+import { Buffer } from "buffer";
 import { Platform } from "react-native";
 
 // ANCS Service and Characteristic UUIDs
@@ -95,10 +96,10 @@ export class BluetoothService {
     try {
       // Get all connected devices (supports ANCS service)
       const devices = await this.getManager().connectedDevices([ANCS_SERVICE_UUID]);
-      console.log("Found paired devices:", devices.map((device: Device) => device.name || "Unknown"));
+      console.log("Found connected devices:", devices.map((device: Device) => device.name || "Unknown"));
       return devices;
     } catch (error) {
-      console.error("Error getting paired devices:", error);
+      console.error("Error getting connected devices:", error);
       return [];
     }
   }
@@ -179,7 +180,10 @@ export class BluetoothService {
 
   private async setupNotificationListener(device: Device): Promise<void> {
     try {
-      // Subscribe to Notification Source characteristic
+      console.log("Setting up ANCS notification listener...");
+
+      // Subscribe to Notification Source characteristic first
+      console.log("Subscribing to Notification Source characteristic...");
       device.monitorCharacteristicForService(
         ANCS_SERVICE_UUID,
         NOTIFICATION_SOURCE_UUID,
@@ -189,13 +193,33 @@ export class BluetoothService {
             return;
           }
 
+          console.log("Notification received:", characteristic?.value);
           if (characteristic?.value) {
             this.parseNotification(characteristic);
           }
         }
       );
 
-      console.log("Successfully subscribed to ANCS notifications");
+      // Write to Control Point to enable notifications
+      // This tells the iPhone we want to receive notifications
+      console.log("Sending Control Point command to enable notifications...");
+      try {
+        // Command format: [CommandID, CategoryID, CategoryBitMask]
+        // 0x00 = EnableNotificationForUID
+        // 0xFF = All categories
+        const enableAllCommand = Buffer.from([0x00, 0xff, 0xff]);
+        await device.writeCharacteristicWithResponseForService(
+          ANCS_SERVICE_UUID,
+          CONTROL_POINT_UUID,
+          enableAllCommand.toString("base64")
+        );
+        console.log("Successfully sent Control Point command to enable all notifications");
+      } catch (e) {
+        console.error("Error writing to Control Point:", e);
+        // Continue anyway - some devices might not require this
+      }
+
+      console.log("Successfully set up ANCS notifications");
     } catch (error) {
       console.error("Failed to setup notification listener:", error);
       throw error;
