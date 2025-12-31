@@ -84,6 +84,18 @@ export class BluetoothService {
     this.onConnectionChangeCallback = callback;
   }
 
+  async getPairedDevices(): Promise<Device[]> {
+    try {
+      // Get all connected devices (supports ANCS service)
+      const devices = await this.manager.connectedDevices([ANCS_SERVICE_UUID]);
+      console.log("Found paired devices:", devices.map((device: Device) => device.name || "Unknown"));
+      return devices;
+    } catch (error) {
+      console.error("Error getting paired devices:", error);
+      return [];
+    }
+  }
+
   async scanForDevices(): Promise<void> {
     this.manager.startDeviceScan([ANCS_SERVICE_UUID], null, (error, device) => {
       if (error) {

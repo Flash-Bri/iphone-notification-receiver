@@ -17,4 +17,11 @@
 - [x] Generate custom app logo
 - [x] Update app branding in app.config.ts
 - [x] Test end-to-end notification flow
-- [ ] Create first checkpoint for deployment
+- [x] Create first checkpoint for deployment
+
+## User Feedback & Updates
+
+- [x] Show list of paired Bluetooth devices instead of scanning
+- [x] Add device selection dropdown/modal to choose iPhone
+- [x] Auto-connect to selected device
+- [x] Display paired devices with connection status

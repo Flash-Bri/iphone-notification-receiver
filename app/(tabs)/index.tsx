@@ -3,11 +3,13 @@ import { FlatList, Text, View, Pressable, Platform, Alert, RefreshControl } from
 import * as Haptics from "expo-haptics";
 import { ScreenContainer } from "@/components/screen-container";
 import { NotificationCard } from "@/components/notification-card";
+import { DeviceSelectionModal } from "@/components/device-selection-modal";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { getBluetoothService, ANCSNotification } from "@/lib/bluetooth-service";
 import { getNotificationStorage } from "@/lib/notification-storage";
 import { PermissionsAndroid } from "react-native";
+import { Device } from "react-native-ble-plx";
 
 export default function HomeScreen() {
   const colors = useColors();
@@ -15,6 +17,10 @@ export default function HomeScreen() {
   const [isConnected, setIsConnected] = useState(false);
   const [deviceName, setDeviceName] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
+  const [showDeviceModal, setShowDeviceModal] = useState(false);
+  const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
 
   const bluetoothService = getBluetoothService();
   const notificationStorage = getNotificationStorage();
@@ -23,7 +29,6 @@ export default function HomeScreen() {
     initializeBluetooth();
 
     return () => {
-      // Cleanup on unmount
       bluetoothService.destroy();
     };
   }, []);
@@ -73,12 +78,43 @@ export default function HomeScreen() {
         if (name) setDeviceName(name);
       });
 
-      // Start scanning for ANCS devices
-      await bluetoothService.scanForDevices();
+      // Load available devices
+      await loadAvailableDevices();
     } catch (error) {
       console.error("Bluetooth initialization error:", error);
       Alert.alert("Error", "Failed to initialize Bluetooth. Please check your settings.");
     }
+  };
+
+  const loadAvailableDevices = async () => {
+    setLoadingDevices(true);
+    try {
+      const devices = await bluetoothService.getPairedDevices();
+      setAvailableDevices(devices);
+      console.log("Available devices:", devices.map((d) => d.name));
+    } catch (error) {
+      console.error("Error loading devices:", error);
+      Alert.alert("Error", "Failed to load Bluetooth devices.");
+    } finally {
+      setLoadingDevices(false);
+    }
+  };
+
+  const handleSelectDevice = async (device: Device) => {
+    try {
+      setSelectedDeviceId(device.id);
+      await bluetoothService.connectToDevice(device);
+      setShowDeviceModal(false);
+    } catch (error) {
+      console.error("Connection error:", error);
+      Alert.alert("Connection Failed", `Could not connect to ${device.name}. Please try again.`);
+      setSelectedDeviceId("");
+    }
+  };
+
+  const handleOpenDeviceModal = async () => {
+    setShowDeviceModal(true);
+    await loadAvailableDevices();
   };
 
   const handleDeleteNotification = async (id: string) => {
@@ -141,15 +177,23 @@ export default function HomeScreen() {
         </View>
 
         {/* Connection Status */}
-        <View className="flex-row items-center gap-2">
-          <View
-            className={`w-2 h-2 rounded-full ${isConnected ? "bg-success" : "bg-muted"}`}
-          />
-          <IconSymbol name="bluetooth" size={18} color={isConnected ? colors.success : colors.muted} />
-          <Text className="text-sm text-muted">
-            {isConnected ? `Connected to ${deviceName}` : "Searching for iPhone..."}
-          </Text>
-        </View>
+        <Pressable
+          onPress={handleOpenDeviceModal}
+          style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+        >
+          <View className="flex-row items-center justify-between bg-surface rounded-lg px-3 py-2 border border-border">
+            <View className="flex-row items-center gap-2 flex-1">
+              <View
+                className={`w-2 h-2 rounded-full ${isConnected ? "bg-success" : "bg-muted"}`}
+              />
+              <IconSymbol name="bluetooth" size={18} color={isConnected ? colors.success : colors.muted} />
+              <Text className="text-sm text-muted flex-1">
+                {isConnected ? `Connected to ${deviceName}` : "Tap to select iPhone"}
+              </Text>
+            </View>
+            <IconSymbol name="chevron.right" size={18} color={colors.muted} />
+          </View>
+        </Pressable>
       </View>
 
       {/* Notification List */}
@@ -162,7 +206,7 @@ export default function HomeScreen() {
           <Text className="text-sm text-muted mt-2 text-center leading-relaxed">
             {isConnected
               ? "Notifications from your iPhone will appear here"
-              : "Make sure your iPhone is paired and 'Share System Notifications' is enabled"}
+              : "Select your iPhone from the connection area above to start receiving notifications"}
           </Text>
         </View>
       ) : (
@@ -182,6 +226,16 @@ export default function HomeScreen() {
           }
         />
       )}
+
+      {/* Device Selection Modal */}
+      <DeviceSelectionModal
+        visible={showDeviceModal}
+        devices={availableDevices}
+        loading={loadingDevices}
+        selectedDeviceId={selectedDeviceId}
+        onSelectDevice={handleSelectDevice}
+        onClose={() => setShowDeviceModal(false)}
+      />
     </ScreenContainer>
   );
 }
