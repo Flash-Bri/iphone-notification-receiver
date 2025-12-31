@@ -7,7 +7,7 @@ import { DeviceSelectionModal } from "@/components/device-selection-modal";
 import { NotificationDetailModal } from "@/components/notification-detail-modal";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { getBluetoothService, ANCSNotification, resetBluetoothService } from "@/lib/bluetooth-service";
+import { getBluetoothService, ANCSNotification } from "@/lib/bluetooth-service";
 import { getNotificationStorage } from "@/lib/notification-storage";
 import { NotificationService } from "@/lib/notification-service";
 import { PermissionsAndroid } from "react-native";
@@ -39,9 +39,10 @@ export default function HomeScreen() {
   const maxReconnectAttempts = 3;
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isReconnectingRef = useRef(false);
+  const savedDeviceNameRef = useRef<string>("");
 
   useEffect(() => {
-    initializeBluetooth();
+    initializeApp();
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
 
@@ -53,41 +54,59 @@ export default function HomeScreen() {
     };
   }, []);
 
+  // Update connection status display
+  useEffect(() => {
+    const checkConnection = setInterval(() => {
+      const bluetoothService = getBluetoothService();
+      const connected = bluetoothService.isConnected();
+      const name = bluetoothService.getConnectedDeviceName();
+      
+      if (connected !== isConnected) {
+        setIsConnected(connected);
+      }
+      if (name && name !== deviceName) {
+        setDeviceName(name);
+      }
+    }, 2000);
+
+    return () => clearInterval(checkConnection);
+  }, [isConnected, deviceName]);
+
   const handleAppStateChange = useCallback(async (nextAppState: AppStateStatus) => {
     const previousState = appState.current;
     appState.current = nextAppState;
 
-    console.log(`[App] State change: ${previousState} -> ${nextAppState}`);
+    console.log(`[App] State: ${previousState} -> ${nextAppState}`);
 
     if (previousState.match(/inactive|background/) && nextAppState === "active") {
-      console.log("[App] App came to foreground");
+      console.log("[App] Foreground - checking connection");
       
-      // Small delay to let the system stabilize
       setTimeout(async () => {
         const bluetoothService = getBluetoothService();
         
+        // Update UI state
+        setIsConnected(bluetoothService.isConnected());
+        const name = bluetoothService.getConnectedDeviceName();
+        if (name) setDeviceName(name);
+        
         if (!bluetoothService.isConnected() && !bluetoothService.isConnecting() && !isReconnectingRef.current) {
-          console.log("[App] Not connected, attempting reconnect...");
+          console.log("[App] Not connected, reconnecting...");
           await attemptAutoReconnect();
-        } else {
-          console.log("[App] Already connected or connecting, skipping reconnect");
         }
-      }, 500);
+      }, 300);
     }
   }, []);
 
   const attemptAutoReconnect = async () => {
-    // Prevent concurrent reconnection attempts
     if (isReconnectingRef.current) {
-      console.log("[Reconnect] Already reconnecting, skipping");
+      console.log("[Reconnect] Already in progress");
       return;
     }
 
     const bluetoothService = getBluetoothService();
     
-    // Check if already connected or connecting
     if (bluetoothService.isConnected() || bluetoothService.isConnecting()) {
-      console.log("[Reconnect] Already connected or connecting");
+      console.log("[Reconnect] Already connected/connecting");
       return;
     }
 
@@ -111,13 +130,16 @@ export default function HomeScreen() {
     setIsReconnecting(true);
     reconnectAttempts.current++;
 
-    console.log(`[Reconnect] Attempt ${reconnectAttempts.current}/${maxReconnectAttempts} to ${lastDeviceName || lastDeviceId}`);
+    if (lastDeviceName) {
+      savedDeviceNameRef.current = lastDeviceName;
+      setDeviceName(lastDeviceName);
+    }
+
+    console.log(`[Reconnect] Attempt ${reconnectAttempts.current}/${maxReconnectAttempts}`);
 
     try {
-      // Reinitialize Bluetooth if needed
       await bluetoothService.initialize();
       
-      // Discover devices
       const devices = await bluetoothService.discoverDevices();
       const lastDevice = devices.find((d) => d.id === lastDeviceId);
 
@@ -125,11 +147,12 @@ export default function HomeScreen() {
         console.log("[Reconnect] Found device, connecting...");
         await bluetoothService.connectToDevice(lastDevice);
         setSelectedDeviceId(lastDeviceId);
+        setIsConnected(true);
         if (lastDeviceName) setDeviceName(lastDeviceName);
         reconnectAttempts.current = 0;
         setShowConnectionPopup(false);
       } else {
-        console.log("[Reconnect] Device not found in scan");
+        console.log("[Reconnect] Device not found");
         if (reconnectAttempts.current < maxReconnectAttempts) {
           scheduleReconnect(5000);
         } else {
@@ -137,10 +160,9 @@ export default function HomeScreen() {
         }
       }
     } catch (error: any) {
-      console.error("[Reconnect] Failed:", error?.message || error);
+      console.error("[Reconnect] Failed:", error?.message);
       
       if (reconnectAttempts.current < maxReconnectAttempts) {
-        // Exponential backoff
         const delay = Math.min(5000 * Math.pow(2, reconnectAttempts.current - 1), 30000);
         scheduleReconnect(delay);
       } else {
@@ -153,7 +175,7 @@ export default function HomeScreen() {
   };
 
   const scheduleReconnect = (delay: number) => {
-    console.log(`[Reconnect] Scheduling retry in ${delay}ms`);
+    console.log(`[Reconnect] Retry in ${delay}ms`);
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
@@ -162,9 +184,14 @@ export default function HomeScreen() {
     }, delay);
   };
 
-  const initializeBluetooth = async () => {
+  const initializeApp = async () => {
     try {
-      // Request Android permissions
+      // Initialize notification service FIRST (before Bluetooth)
+      console.log("[Init] Initializing notification service...");
+      const notifPermission = await NotificationService.initialize();
+      console.log("[Init] Notification permission:", notifPermission);
+
+      // Request Android Bluetooth permissions
       if (Platform.OS === "android") {
         const granted = await PermissionsAndroid.requestMultiple([
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
@@ -178,14 +205,20 @@ export default function HomeScreen() {
         if (!allGranted) {
           Alert.alert(
             "Permissions Required",
-            "Bluetooth and location permissions are required to receive notifications from iPhone."
+            "Bluetooth and location permissions are required."
           );
         }
       }
 
+      // Load saved device name for display
+      const savedName = await AsyncStorage.getItem(LAST_DEVICE_NAME_KEY);
+      if (savedName) {
+        savedDeviceNameRef.current = savedName;
+      }
+
       const bluetoothService = getBluetoothService();
 
-      // Initialize Bluetooth service
+      // Initialize Bluetooth
       if (Platform.OS !== "web") {
         await bluetoothService.initialize();
       }
@@ -194,56 +227,65 @@ export default function HomeScreen() {
       const stored = await notificationStorage.getAllNotifications();
       setNotifications(stored);
 
-      // Initialize notification service
-      await NotificationService.initialize();
-
-      // Set up notification listener
+      // Set up notification listener - THIS IS CRITICAL
       bluetoothService.onNotification(async (notification) => {
-        console.log("[Notification] Received:", notification.categoryName, notification.title);
+        console.log(`[Notification] Received: ${notification.categoryName} - ${notification.title}`);
+        
+        // Save to storage
         await notificationStorage.saveNotification(notification);
+        
+        // Update UI
         setNotifications((prev) => [notification, ...prev]);
 
-        // Send system notification with full details
-        await NotificationService.sendNotification({
-          title: notification.title || notification.categoryName || "Notification",
-          body: notification.message || `New ${notification.categoryName} notification`,
+        // IMMEDIATELY send system notification
+        const sent = await NotificationService.sendNotification({
+          title: notification.title || notification.categoryName || "iPhone Notification",
+          body: notification.message || notification.subtitle || `New ${notification.categoryName} notification`,
           subtitle: notification.subtitle,
           categoryName: notification.categoryName,
           isImportant: notification.isImportant,
           appIdentifier: notification.appIdentifier,
         });
+        
+        console.log(`[Notification] System notification sent: ${sent}`);
 
         // Haptic feedback
         if (Platform.OS !== "web") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          try {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          } catch (e) {}
         }
       });
 
       // Set up connection listener
       bluetoothService.onConnectionChange(async (connected, name) => {
-        console.log(`[Connection] Changed: connected=${connected}, name=${name}`);
+        console.log(`[Connection] Changed: ${connected}, name: ${name}`);
         setIsConnected(connected);
-        if (name) setDeviceName(name);
+        if (name) {
+          setDeviceName(name);
+        } else if (!connected && savedDeviceNameRef.current) {
+          // Keep showing saved device name even when disconnected
+          setDeviceName(savedDeviceNameRef.current);
+        }
 
         if (!connected && !isReconnectingRef.current) {
-          console.log("[Connection] Lost, will attempt reconnect...");
-          // Delay before reconnect to allow system to stabilize
+          console.log("[Connection] Lost, scheduling reconnect...");
           scheduleReconnect(3000);
         }
       });
 
       setIsInitialized(true);
 
-      // Try to auto-reconnect to last device
+      // Auto-reconnect
       if (Platform.OS !== "web") {
         await attemptAutoReconnect();
       }
     } catch (error: any) {
-      console.error("[Init] Bluetooth error:", error?.message || error);
+      console.error("[Init] Error:", error?.message);
       setIsInitialized(true);
       
       if (Platform.OS !== "web") {
-        Alert.alert("Bluetooth", "Could not initialize Bluetooth. Please check your settings.");
+        Alert.alert("Error", "Could not initialize. Please check Bluetooth settings.");
       }
     }
   };
@@ -251,9 +293,8 @@ export default function HomeScreen() {
   const handleSelectDevice = async (device: Device) => {
     const bluetoothService = getBluetoothService();
     
-    // Prevent selection while connecting
     if (bluetoothService.isConnecting()) {
-      console.log("[Select] Already connecting, ignoring");
+      console.log("[Select] Already connecting");
       return;
     }
 
@@ -264,18 +305,21 @@ export default function HomeScreen() {
 
       await bluetoothService.connectToDevice(device);
 
-      // Save device for auto-reconnection
+      // Save for auto-reconnection
       await AsyncStorage.setItem(LAST_DEVICE_KEY, device.id);
       if (device.name) {
         await AsyncStorage.setItem(LAST_DEVICE_NAME_KEY, device.name);
+        savedDeviceNameRef.current = device.name;
         setDeviceName(device.name);
       }
       bluetoothService.setLastConnectedDeviceId(device.id);
       reconnectAttempts.current = 0;
+      setIsConnected(true);
     } catch (error: any) {
-      console.error("[Select] Connection error:", error?.message || error);
-      Alert.alert("Connection Failed", `Could not connect to ${device.name || "device"}. Please try again.`);
+      console.error("[Select] Error:", error?.message);
+      Alert.alert("Connection Failed", `Could not connect to ${device.name || "device"}.`);
       setSelectedDeviceId("");
+      setIsConnected(false);
     }
   };
 
@@ -287,17 +331,15 @@ export default function HomeScreen() {
     setLoadingDevices(true);
     
     try {
-      // Reinitialize if needed
       if (Platform.OS !== "web") {
         await bluetoothService.initialize();
       }
       
       const scannedDevices = await bluetoothService.discoverDevices();
       setAvailableDevices(scannedDevices);
-      console.log("[Modal] Discovered devices:", scannedDevices.length);
     } catch (error: any) {
-      console.error("[Modal] Error discovering devices:", error?.message || error);
-      Alert.alert("Error", "Failed to discover Bluetooth devices. Please try again.");
+      console.error("[Modal] Error:", error?.message);
+      Alert.alert("Error", "Failed to discover devices.");
     } finally {
       setLoadingDevices(false);
     }
@@ -312,7 +354,7 @@ export default function HomeScreen() {
   };
 
   const handleClearAll = () => {
-    Alert.alert("Clear All Notifications", "Are you sure you want to clear all notifications?", [
+    Alert.alert("Clear All", "Clear all notifications?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Clear",
@@ -347,13 +389,25 @@ export default function HomeScreen() {
   };
 
   const getConnectionStatusText = () => {
+    if (isConnected && deviceName) {
+      return deviceName;
+    }
     if (isConnected) {
-      return deviceName || "Connected";
+      return "Connected";
     }
     if (isReconnecting) {
-      return "Reconnecting...";
+      return `Reconnecting${deviceName ? ` to ${deviceName}` : ""}...`;
+    }
+    if (deviceName || savedDeviceNameRef.current) {
+      return `Tap to connect to ${deviceName || savedDeviceNameRef.current}`;
     }
     return "Tap to select iPhone";
+  };
+
+  const getConnectionStatusColor = () => {
+    if (isConnected) return "bg-success";
+    if (isReconnecting) return "bg-warning";
+    return "bg-muted";
   };
 
   return (
@@ -405,16 +459,10 @@ export default function HomeScreen() {
               isConnected ? "bg-success/10 border-success/30" : "bg-surface border-border"
             }`}
           >
-            <View
-              className={`w-3 h-3 rounded-full ${
-                isConnected ? "bg-success" : isReconnecting ? "bg-warning" : "bg-muted"
-              }`}
-            />
-            {isReconnecting && (
-              <IconSymbol name="bluetooth" size={18} color={colors.warning} />
-            )}
+            <View className={`w-3 h-3 rounded-full ${getConnectionStatusColor()}`} />
             <Text
               className={`flex-1 text-sm ${isConnected ? "text-success font-medium" : "text-muted"}`}
+              numberOfLines={1}
             >
               {getConnectionStatusText()}
             </Text>
@@ -431,7 +479,9 @@ export default function HomeScreen() {
             No Notifications Yet
           </Text>
           <Text className="text-sm text-muted mt-2 text-center">
-            Select your iPhone from the connection area above to start receiving notifications
+            {isConnected 
+              ? "Notifications from your iPhone will appear here"
+              : "Connect to your iPhone to start receiving notifications"}
           </Text>
         </View>
       ) : (

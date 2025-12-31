@@ -89,3 +89,15 @@
 - [x] Update app logo with orange accent
 - [x] Comprehensive code review and optimization
 - [x] Update version number to 1.3.0
+
+
+## Phase 11: Critical Bug Fixes
+
+- [x] Fix ANCS attribute request - proper command format with little-endian UIDs
+- [x] Fix background/lock screen notifications - improved notification service with proper channels
+- [x] Fix connection status UI - now shows device name correctly after reconnect
+- [x] Fix notifications queuing - now fire immediately via NotificationService
+- [x] Add more defensive error handling throughout Bluetooth service
+- [x] Improve connection state tracking with periodic checks
+- [x] Verify notification service fires system notifications immediately
+- [x] Review ANCS Control Point command format - fixed attribute request structure
