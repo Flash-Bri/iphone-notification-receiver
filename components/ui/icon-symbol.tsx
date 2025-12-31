@@ -32,6 +32,11 @@ const MAPPING = {
   "checkmark.circle.fill": "check-circle",
   "gear": "settings",
   "trash": "delete",
+  "info.circle": "info",
+  "message.fill": "message",
+  "video.fill": "videocam",
+  "checklist": "checklist",
+  "music.note": "music-note",
 } as const;
 
 type IconSymbolName = keyof typeof MAPPING;

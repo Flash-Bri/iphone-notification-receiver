@@ -1,4 +1,4 @@
-import { BleManager, Device, Characteristic } from "react-native-ble-plx";
+import { BleManager, Device, Characteristic, Subscription } from "react-native-ble-plx";
 import { Buffer } from "buffer";
 import { Platform } from "react-native";
 
@@ -7,6 +7,18 @@ const ANCS_SERVICE_UUID = "7905F431-B5CE-4E99-A40F-4B1E122D00D0";
 const NOTIFICATION_SOURCE_UUID = "9FBF120D-6301-42D9-8C58-25E699A21DBD";
 const CONTROL_POINT_UUID = "69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9";
 const DATA_SOURCE_UUID = "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB";
+
+// ANCS Notification Attribute IDs
+const NotificationAttributeID = {
+  AppIdentifier: 0,
+  Title: 1,
+  Subtitle: 2,
+  Message: 3,
+  MessageSize: 4,
+  Date: 5,
+  PositiveActionLabel: 6,
+  NegativeActionLabel: 7,
+};
 
 export interface ANCSNotification {
   id: string;
@@ -18,6 +30,12 @@ export interface ANCSNotification {
   timestamp: number;
   categoryName: string;
   isImportant: boolean;
+  // Extended attributes from Data Source
+  appIdentifier?: string;
+  title?: string;
+  subtitle?: string;
+  message?: string;
+  date?: string;
 }
 
 export enum EventID {
@@ -56,12 +74,34 @@ const CATEGORY_NAMES: Record<CategoryID, string> = {
   [CategoryID.Entertainment]: "Entertainment",
 };
 
+// Map app identifiers to friendly names
+const APP_NAMES: Record<string, string> = {
+  "com.apple.MobileSMS": "Messages",
+  "com.apple.mobilemail": "Mail",
+  "com.apple.mobilephone": "Phone",
+  "com.apple.facetime": "FaceTime",
+  "com.facebook.Messenger": "Messenger",
+  "com.facebook.Facebook": "Facebook",
+  "com.atebits.Tweetie2": "Twitter",
+  "com.burbn.instagram": "Instagram",
+  "net.whatsapp.WhatsApp": "WhatsApp",
+  "com.google.Gmail": "Gmail",
+  "com.apple.Preferences": "Settings",
+  "com.apple.mobilecal": "Calendar",
+  "com.apple.reminders": "Reminders",
+  "com.spotify.client": "Spotify",
+  "com.apple.Music": "Music",
+};
+
 export class BluetoothService {
   private manager: BleManager | null = null;
   private connectedDevice: Device | null = null;
   private lastConnectedDeviceId: string | null = null;
   private onNotificationCallback: ((notification: ANCSNotification) => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean, deviceName?: string) => void) | null = null;
+  private pendingNotifications: Map<number, ANCSNotification> = new Map();
+  private dataSourceSubscription: Subscription | null = null;
+  private notificationSourceSubscription: Subscription | null = null;
 
   constructor() {
     // BleManager will be initialized lazily
@@ -95,7 +135,6 @@ export class BluetoothService {
 
   async getPairedDevices(): Promise<Device[]> {
     try {
-      // Get all connected devices (supports ANCS service)
       const devices = await this.getManager().connectedDevices([ANCS_SERVICE_UUID]);
       console.log("Found connected devices:", devices.map((device: Device) => device.name || "Unknown"));
       return devices;
@@ -169,13 +208,26 @@ export class BluetoothService {
       connectedDevice.onDisconnected(() => {
         console.log("Device disconnected");
         this.connectedDevice = null;
+        this.cleanupSubscriptions();
         this.onConnectionChangeCallback?.(false);
       });
     } catch (error) {
       console.error("Connection error:", error);
       this.connectedDevice = null;
+      this.cleanupSubscriptions();
       this.onConnectionChangeCallback?.(false);
       throw error;
+    }
+  }
+
+  private cleanupSubscriptions(): void {
+    if (this.dataSourceSubscription) {
+      this.dataSourceSubscription.remove();
+      this.dataSourceSubscription = null;
+    }
+    if (this.notificationSourceSubscription) {
+      this.notificationSourceSubscription.remove();
+      this.notificationSourceSubscription = null;
     }
   }
 
@@ -183,9 +235,26 @@ export class BluetoothService {
     try {
       console.log("Setting up ANCS notification listener...");
 
+      // First, subscribe to Data Source to receive notification details
+      console.log("Subscribing to Data Source characteristic...");
+      this.dataSourceSubscription = device.monitorCharacteristicForService(
+        ANCS_SERVICE_UUID,
+        DATA_SOURCE_UUID,
+        (error, characteristic) => {
+          if (error) {
+            console.error("Data Source monitor error:", error);
+            return;
+          }
+
+          if (characteristic?.value) {
+            this.parseDataSourceResponse(characteristic);
+          }
+        }
+      );
+
       // Subscribe to Notification Source characteristic
       console.log("Subscribing to Notification Source characteristic...");
-      device.monitorCharacteristicForService(
+      this.notificationSourceSubscription = device.monitorCharacteristicForService(
         ANCS_SERVICE_UUID,
         NOTIFICATION_SOURCE_UUID,
         (error, characteristic) => {
@@ -202,7 +271,6 @@ export class BluetoothService {
       );
 
       // Send Control Point command after a delay (non-blocking)
-      // This tells the iPhone we want to receive notifications
       console.log("Scheduling Control Point initialization...");
       setTimeout(() => {
         this.sendControlPointCommand(device);
@@ -217,9 +285,6 @@ export class BluetoothService {
 
   private sendControlPointCommand(device: Device): void {
     try {
-      // Command format: [CommandID, CategoryID, CategoryBitMask]
-      // 0x00 = EnableNotificationForUID
-      // 0xFF = All categories
       const enableAllCommand = Buffer.from([0x00, 0xff, 0xff]);
 
       device
@@ -239,19 +304,122 @@ export class BluetoothService {
     }
   }
 
+  private requestNotificationAttributes(notificationUid: number): void {
+    if (!this.connectedDevice) return;
+
+    try {
+      // Command format:
+      // [0] CommandID = 0 (Get Notification Attributes)
+      // [1-4] NotificationUID (4 bytes, little-endian)
+      // [5+] AttributeIDs with max lengths
+
+      const command = Buffer.alloc(15);
+      command[0] = 0; // CommandID: Get Notification Attributes
+      command.writeUInt32LE(notificationUid, 1); // NotificationUID
+
+      // Request attributes with max lengths
+      command[5] = NotificationAttributeID.AppIdentifier;
+      command[6] = NotificationAttributeID.Title;
+      command.writeUInt16LE(255, 7); // Max length for title
+      command[9] = NotificationAttributeID.Message;
+      command.writeUInt16LE(255, 10); // Max length for message
+      command[12] = NotificationAttributeID.Subtitle;
+      command.writeUInt16LE(255, 13); // Max length for subtitle
+
+      console.log("Requesting notification attributes for UID:", notificationUid);
+
+      this.connectedDevice
+        .writeCharacteristicWithoutResponseForService(
+          ANCS_SERVICE_UUID,
+          CONTROL_POINT_UUID,
+          command.toString("base64")
+        )
+        .then(() => {
+          console.log("Attribute request sent for UID:", notificationUid);
+        })
+        .catch((error: any) => {
+          console.error("Error requesting attributes:", error?.message);
+        });
+    } catch (error) {
+      console.error("Error building attribute request:", error);
+    }
+  }
+
+  private parseDataSourceResponse(characteristic: Characteristic): void {
+    try {
+      if (!characteristic.value) return;
+
+      const data = Buffer.from(characteristic.value, "base64");
+      console.log("Data Source response received, length:", data.length);
+
+      if (data.length < 5) return;
+
+      const commandId = data[0];
+      if (commandId !== 0) return; // Not a notification attributes response
+
+      const notificationUid = data.readUInt32LE(1);
+      console.log("Received attributes for notification UID:", notificationUid);
+
+      const pendingNotification = this.pendingNotifications.get(notificationUid);
+      if (!pendingNotification) {
+        console.log("No pending notification found for UID:", notificationUid);
+        return;
+      }
+
+      // Parse attributes
+      let offset = 5;
+      while (offset < data.length) {
+        const attributeId = data[offset];
+        offset++;
+
+        if (offset + 2 > data.length) break;
+        const length = data.readUInt16LE(offset);
+        offset += 2;
+
+        if (offset + length > data.length) break;
+        const value = data.slice(offset, offset + length).toString("utf8");
+        offset += length;
+
+        switch (attributeId) {
+          case NotificationAttributeID.AppIdentifier:
+            pendingNotification.appIdentifier = value;
+            break;
+          case NotificationAttributeID.Title:
+            pendingNotification.title = value;
+            break;
+          case NotificationAttributeID.Subtitle:
+            pendingNotification.subtitle = value;
+            break;
+          case NotificationAttributeID.Message:
+            pendingNotification.message = value;
+            break;
+          case NotificationAttributeID.Date:
+            pendingNotification.date = value;
+            break;
+        }
+      }
+
+      // Update category name with app name if available
+      if (pendingNotification.appIdentifier) {
+        const appName = APP_NAMES[pendingNotification.appIdentifier] || pendingNotification.appIdentifier;
+        pendingNotification.categoryName = appName;
+      }
+
+      console.log("Parsed notification:", pendingNotification);
+
+      // Remove from pending and notify
+      this.pendingNotifications.delete(notificationUid);
+      this.onNotificationCallback?.(pendingNotification);
+    } catch (error) {
+      console.error("Error parsing Data Source response:", error);
+    }
+  }
+
   private parseNotification(characteristic: Characteristic): void {
     try {
       if (!characteristic.value) return;
 
-      // Decode base64 value to bytes
       const data = Buffer.from(characteristic.value, "base64");
-
-      // ANCS Notification Source format (8 bytes):
-      // [0] EventID (1 byte)
-      // [1] EventFlags (1 byte)
-      // [2] CategoryID (1 byte)
-      // [3] CategoryCount (1 byte)
-      // [4-7] NotificationUID (4 bytes, little-endian)
 
       if (data.length < 8) {
         console.warn("Invalid notification data length:", data.length);
@@ -264,7 +432,6 @@ export class BluetoothService {
       const categoryCount = data[3];
       const notificationUid = data.readUInt32LE(4);
 
-      // Check if this is an important notification (bit 0 of EventFlags)
       const isImportant = (eventFlags & 0x01) !== 0;
 
       const notification: ANCSNotification = {
@@ -281,9 +448,21 @@ export class BluetoothService {
 
       console.log("Received notification:", notification);
 
-      // Only notify for added notifications, not modifications or removals
+      // Only process added notifications
       if (eventId === EventID.Added) {
-        this.onNotificationCallback?.(notification);
+        // Store in pending and request full attributes
+        this.pendingNotifications.set(notificationUid, notification);
+        this.requestNotificationAttributes(notificationUid);
+
+        // Set a timeout to deliver notification even if attributes fail
+        setTimeout(() => {
+          const pending = this.pendingNotifications.get(notificationUid);
+          if (pending) {
+            console.log("Timeout: delivering notification without full attributes");
+            this.pendingNotifications.delete(notificationUid);
+            this.onNotificationCallback?.(pending);
+          }
+        }, 3000);
       }
     } catch (error) {
       console.error("Error parsing notification:", error);
@@ -291,6 +470,7 @@ export class BluetoothService {
   }
 
   async disconnect(): Promise<void> {
+    this.cleanupSubscriptions();
     if (this.connectedDevice) {
       await this.connectedDevice.cancelConnection();
       this.connectedDevice = null;
@@ -315,6 +495,7 @@ export class BluetoothService {
   }
 
   destroy(): void {
+    this.cleanupSubscriptions();
     if (this.manager) {
       this.manager.destroy();
     }

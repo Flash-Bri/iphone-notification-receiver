@@ -25,8 +25,8 @@ const env = {
 const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
-  version: "1.1.0",
-  runtimeVersion: "1.1.0",
+  version: "1.2.0",
+  runtimeVersion: "1.2.0",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -53,6 +53,11 @@ const config: ExpoConfig = {
       "BLUETOOTH_CONNECT",
       "BLUETOOTH_SCAN",
       "ACCESS_FINE_LOCATION",
+      "FOREGROUND_SERVICE",
+      "FOREGROUND_SERVICE_CONNECTED_DEVICE",
+      "RECEIVE_BOOT_COMPLETED",
+      "SYSTEM_ALERT_WINDOW",
+      "WAKE_LOCK",
     ],
     intentFilters: [
       {

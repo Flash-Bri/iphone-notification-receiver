@@ -59,3 +59,19 @@
 - [ ] Display app icon with notification card
 - [ ] Add category-specific styling and icons
 - [ ] Improve notification card layout to show full details
+
+
+## Phase 9: Auto-Reconnection, Background Service & Floating Notifications
+
+- [x] Save last connected device ID to AsyncStorage on successful connection
+- [x] Auto-connect to saved device on app launch
+- [x] Implement Data Source characteristic reading for full notification details
+- [x] Parse notification title, message, and app name from Data Source
+- [x] Create notification details modal/sheet component
+- [x] Add system notifications for background alerts
+- [x] Add Android permissions for foreground service and background operation
+- [x] Add connection status monitoring and reconnection logic
+- [x] Show connection popup when connection drops
+- [x] Request SYSTEM_ALERT_WINDOW permission for float over other apps
+- [x] Add RECEIVE_BOOT_COMPLETED permission for app auto-start
+- [x] Improve notification card to show full details when available

@@ -15,8 +15,10 @@ Notifications.setNotificationHandler({
 export interface LocalNotification {
   title: string;
   body: string;
+  subtitle?: string;
   categoryName?: string;
   isImportant?: boolean;
+  appIdentifier?: string;
 }
 
 export class NotificationService {
@@ -33,37 +35,101 @@ export class NotificationService {
 
     // Set up notification channels for Android
     if (Platform.OS === "android") {
+      // Default channel
       await Notifications.setNotificationChannelAsync("default", {
-        name: "default",
-        importance: Notifications.AndroidImportance.MAX,
+        name: "Notifications",
+        importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
-        lightColor: "#FF231F7C",
+        lightColor: "#007AFF",
+        sound: "default",
       });
 
-      // High priority channel for important notifications
+      // Important/urgent channel
       await Notifications.setNotificationChannelAsync("important", {
         name: "Important",
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 250, 250, 250],
-        lightColor: "#FF0000",
+        lightColor: "#FF3B30",
+        sound: "default",
+        bypassDnd: true,
+      });
+
+      // Messages channel
+      await Notifications.setNotificationChannelAsync("messages", {
+        name: "Messages",
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#34C759",
+        sound: "default",
+      });
+
+      // Calls channel
+      await Notifications.setNotificationChannelAsync("calls", {
+        name: "Calls",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 200, 500],
+        lightColor: "#34C759",
+        sound: "default",
+        bypassDnd: true,
+      });
+
+      // Social channel
+      await Notifications.setNotificationChannelAsync("social", {
+        name: "Social",
+        importance: Notifications.AndroidImportance.DEFAULT,
+        vibrationPattern: [0, 250],
+        lightColor: "#0084FF",
+        sound: "default",
       });
     }
   }
 
+  static getChannelId(categoryName?: string, isImportant?: boolean): string {
+    if (isImportant) return "important";
+
+    switch (categoryName?.toLowerCase()) {
+      case "messages":
+      case "messenger":
+      case "whatsapp":
+        return "messages";
+      case "incoming call":
+      case "missed call":
+      case "phone":
+        return "calls";
+      case "social":
+      case "facebook":
+      case "twitter":
+      case "instagram":
+        return "social";
+      default:
+        return "default";
+    }
+  }
+
   static async sendNotification(notification: LocalNotification): Promise<void> {
+    if (Platform.OS === "web") {
+      console.log("Web notification (simulated):", notification);
+      return;
+    }
+
     try {
-      const channelId = notification.isImportant ? "important" : "default";
+      const channelId = this.getChannelId(notification.categoryName, notification.isImportant);
 
       await Notifications.scheduleNotificationAsync({
         content: {
           title: notification.title,
           body: notification.body,
+          subtitle: notification.subtitle,
           sound: true,
           vibrate: [0, 250, 250, 250],
           badge: 1,
+          priority: notification.isImportant
+            ? Notifications.AndroidNotificationPriority.MAX
+            : Notifications.AndroidNotificationPriority.HIGH,
           data: {
             categoryName: notification.categoryName,
             isImportant: notification.isImportant,
+            appIdentifier: notification.appIdentifier,
           },
         },
         trigger: null,
@@ -79,7 +145,7 @@ export class NotificationService {
     await Notifications.dismissAllNotificationsAsync();
   }
 
-  static async clearNotification(notificationId: string): Promise<void> {
-    console.log("Note: Cannot dismiss specific notification with ID:", notificationId);
+  static async setBadgeCount(count: number): Promise<void> {
+    await Notifications.setBadgeCountAsync(count);
   }
 }
