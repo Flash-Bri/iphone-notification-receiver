@@ -103,6 +103,36 @@ export class BluetoothService {
     }
   }
 
+  async discoverDevices(): Promise<Device[]> {
+    return new Promise((resolve) => {
+      const discoveredDevices: Map<string, Device> = new Map();
+      let scanTimeout: ReturnType<typeof setTimeout>;
+
+      const handleScanResult = (error: any, device: Device | null) => {
+        if (error) {
+          console.error("Scan error:", error);
+          return;
+        }
+
+        if (device && device.id) {
+          if (!discoveredDevices.has(device.id)) {
+            console.log("Found device:", device.name || device.id);
+            discoveredDevices.set(device.id, device);
+          }
+        }
+      };
+
+      this.getManager().startDeviceScan(null, null, handleScanResult);
+
+      scanTimeout = setTimeout(() => {
+        this.getManager().stopDeviceScan();
+        const devices = Array.from(discoveredDevices.values());
+        console.log("Scan complete. Found", devices.length, "devices");
+        resolve(devices);
+      }, 5000);
+    });
+  }
+
   async scanForDevices(): Promise<void> {
     this.getManager().startDeviceScan([ANCS_SERVICE_UUID], null, (error, device) => {
       if (error) {

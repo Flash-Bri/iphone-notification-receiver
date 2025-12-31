@@ -114,7 +114,17 @@ export default function HomeScreen() {
 
   const handleOpenDeviceModal = async () => {
     setShowDeviceModal(true);
-    await loadAvailableDevices();
+    setLoadingDevices(true);
+    try {
+      const scannedDevices = await bluetoothService.discoverDevices();
+      setAvailableDevices(scannedDevices);
+      console.log("Discovered devices:", scannedDevices.map((d) => d.name));
+    } catch (error) {
+      console.error("Error discovering devices:", error);
+      Alert.alert("Error", "Failed to discover Bluetooth devices.");
+    } finally {
+      setLoadingDevices(false);
+    }
   };
 
   const handleDeleteNotification = async (id: string) => {
