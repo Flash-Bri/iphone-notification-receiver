@@ -56,13 +56,20 @@ const CATEGORY_NAMES: Record<CategoryID, string> = {
 };
 
 export class BluetoothService {
-  private manager: BleManager;
+  private manager: BleManager | null = null;
   private connectedDevice: Device | null = null;
   private onNotificationCallback: ((notification: ANCSNotification) => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean, deviceName?: string) => void) | null = null;
 
   constructor() {
-    this.manager = new BleManager();
+    // BleManager will be initialized lazily
+  }
+
+  private getManager(): BleManager {
+    if (!this.manager) {
+      this.manager = new BleManager();
+    }
+    return this.manager;
   }
 
   async initialize(): Promise<void> {
@@ -70,7 +77,7 @@ export class BluetoothService {
       throw new Error("Bluetooth is not supported on web platform");
     }
 
-    const state = await this.manager.state();
+    const state = await this.getManager().state();
     if (state !== "PoweredOn") {
       throw new Error("Bluetooth is not powered on");
     }
@@ -87,7 +94,7 @@ export class BluetoothService {
   async getPairedDevices(): Promise<Device[]> {
     try {
       // Get all connected devices (supports ANCS service)
-      const devices = await this.manager.connectedDevices([ANCS_SERVICE_UUID]);
+      const devices = await this.getManager().connectedDevices([ANCS_SERVICE_UUID]);
       console.log("Found paired devices:", devices.map((device: Device) => device.name || "Unknown"));
       return devices;
     } catch (error) {
@@ -97,7 +104,7 @@ export class BluetoothService {
   }
 
   async scanForDevices(): Promise<void> {
-    this.manager.startDeviceScan([ANCS_SERVICE_UUID], null, (error, device) => {
+    this.getManager().startDeviceScan([ANCS_SERVICE_UUID], null, (error, device) => {
       if (error) {
         console.error("Scan error:", error);
         return;
@@ -112,7 +119,7 @@ export class BluetoothService {
 
   async connectToDevice(device: Device): Promise<void> {
     try {
-      this.manager.stopDeviceScan();
+      this.getManager().stopDeviceScan();
 
       console.log("Connecting to device:", device.name);
       const connectedDevice = await device.connect();
@@ -233,7 +240,9 @@ export class BluetoothService {
   }
 
   destroy(): void {
-    this.manager.destroy();
+    if (this.manager) {
+      this.manager.destroy();
+    }
   }
 }
 
