@@ -5,16 +5,31 @@ import { BluetoothService, EventID, CategoryID } from "../bluetooth-service";
 vi.mock("react-native-ble-plx", () => ({
   BleManager: vi.fn().mockImplementation(() => ({
     state: vi.fn().mockResolvedValue("PoweredOn"),
+    onStateChange: vi.fn((callback, emitCurrentState) => {
+      if (emitCurrentState) {
+        callback("PoweredOn");
+      }
+      return { remove: vi.fn() };
+    }),
     startDeviceScan: vi.fn(),
     stopDeviceScan: vi.fn(),
+    connectedDevices: vi.fn().mockResolvedValue([]),
     destroy: vi.fn(),
   })),
+  State: {
+    PoweredOn: "PoweredOn",
+    PoweredOff: "PoweredOff",
+  },
 }));
 
 // Mock react-native Platform
 vi.mock("react-native", () => ({
   Platform: {
     OS: "android",
+  },
+  AppState: {
+    currentState: "active",
+    addEventListener: vi.fn(() => ({ remove: vi.fn() })),
   },
   PermissionsAndroid: {
     PERMISSIONS: {
@@ -64,6 +79,15 @@ describe("BluetoothService", () => {
     const callback = vi.fn();
     service.onConnectionChange(callback);
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("should report not connecting initially", () => {
+    expect(service.isConnecting()).toBe(false);
+  });
+
+  it("should allow setting last connected device id", () => {
+    service.setLastConnectedDeviceId("test-device-id");
+    expect(service.getLastConnectedDeviceId()).toBe("test-device-id");
   });
 });
 

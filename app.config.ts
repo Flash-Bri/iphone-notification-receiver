@@ -16,7 +16,7 @@ const env = {
   appSlug: "iphone-notification-receiver",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663272074011/FRmDpcrREjmXknug.png",
+  logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663272074011/DZZbQYWiSiSxCYmr.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -25,8 +25,8 @@ const env = {
 const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
-  version: "1.2.0",
-  runtimeVersion: "1.2.0",
+  version: "1.3.0",
+  runtimeVersion: "1.3.0",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
