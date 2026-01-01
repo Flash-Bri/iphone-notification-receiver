@@ -80,3 +80,8 @@
 - [x] Test reconnection after screen off/on (documented)
 - [x] Document implementation locations (IMPLEMENTATION_NOTES.md)
 - [x] Create test steps documentation (IMPLEMENTATION_NOTES.md)
+
+
+## Build Issues
+
+- [x] Fix APK build error: "no expo project found (missing app.json, app.config.js, or package.json)" - Added app.json
