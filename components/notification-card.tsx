@@ -10,24 +10,6 @@ interface NotificationCardProps {
   onDelete: () => void;
 }
 
-// App-specific colors for visual distinction
-const APP_COLORS: Record<string, string> = {
-  "Messages": "#34C759",
-  "Mail": "#007AFF",
-  "Phone": "#34C759",
-  "FaceTime": "#34C759",
-  "Messenger": "#0084FF",
-  "Facebook": "#1877F2",
-  "Twitter": "#1DA1F2",
-  "Instagram": "#E4405F",
-  "WhatsApp": "#25D366",
-  "Gmail": "#EA4335",
-  "Calendar": "#FF3B30",
-  "Reminders": "#FF9500",
-  "Spotify": "#1DB954",
-  "Music": "#FC3C44",
-};
-
 export function NotificationCard({ notification, onPress, onDelete }: NotificationCardProps) {
   const colors = useColors();
 
@@ -43,37 +25,7 @@ export function NotificationCard({ notification, onPress, onDelete }: Notificati
     return date.toLocaleDateString();
   };
 
-  const getCategoryIcon = (categoryId: number, appName?: string): string => {
-    // First check for app-specific icons
-    if (appName) {
-      switch (appName) {
-        case "Messages":
-          return "message.fill";
-        case "Mail":
-        case "Gmail":
-          return "envelope.fill";
-        case "Phone":
-          return "phone.fill";
-        case "FaceTime":
-          return "video.fill";
-        case "Messenger":
-        case "WhatsApp":
-          return "message.fill";
-        case "Facebook":
-        case "Twitter":
-        case "Instagram":
-          return "person.2.fill";
-        case "Calendar":
-          return "calendar";
-        case "Reminders":
-          return "checklist";
-        case "Spotify":
-        case "Music":
-          return "music.note";
-      }
-    }
-
-    // Fall back to category-based icons
+  const getCategoryIcon = (categoryId: number): string => {
     switch (categoryId) {
       case 1: // Incoming Call
       case 2: // Missed Call
@@ -101,11 +53,44 @@ export function NotificationCard({ notification, onPress, onDelete }: Notificati
     }
   };
 
-  const getAppColor = (): string => {
-    if (notification.categoryName && APP_COLORS[notification.categoryName]) {
-      return APP_COLORS[notification.categoryName];
+  const getCategoryColor = (categoryId: number): string => {
+    switch (categoryId) {
+      case 1: // Incoming Call
+      case 2: // Missed Call
+        return colors.success;
+      case 3: // Voicemail
+        return colors.warning;
+      case 4: // Social
+        return "#0084FF"; // Facebook blue
+      case 5: // Schedule
+        return colors.error;
+      case 6: // Email
+        return colors.primary;
+      case 7: // News
+        return "#FF6B00"; // Orange
+      case 8: // Health and Fitness
+        return "#FF2D55"; // Pink
+      case 9: // Business and Finance
+        return "#5856D6"; // Purple
+      case 10: // Location
+        return colors.success;
+      case 11: // Entertainment
+        return "#FF9500"; // Orange
+      default:
+        return colors.muted;
     }
-    return notification.isImportant ? colors.error : colors.primary;
+  };
+
+  const formatAppName = (appIdentifier?: string): string => {
+    if (!appIdentifier) return "";
+    // Extract app name from bundle ID (e.g., "com.facebook.Messenger" -> "Messenger")
+    const parts = appIdentifier.split(".");
+    if (parts.length > 0) {
+      const lastPart = parts[parts.length - 1];
+      // Capitalize first letter and handle common cases
+      return lastPart.charAt(0).toUpperCase() + lastPart.slice(1);
+    }
+    return appIdentifier;
   };
 
   const handlePress = () => {
@@ -123,14 +108,12 @@ export function NotificationCard({ notification, onPress, onDelete }: Notificati
   };
 
   // Determine what to display
-  const hasFullDetails = notification.title || notification.message;
-  const displayTitle = notification.title || notification.categoryName;
+  const hasRealContent = notification.title || notification.message || notification.subtitle;
+  const displayTitle = notification.title || notification.appDisplayName || formatAppName(notification.appIdentifier) || notification.categoryName;
   const displaySubtitle = notification.subtitle;
-  const displayMessage = notification.message || (
-    notification.categoryCount > 1
-      ? `${notification.categoryCount} notifications`
-      : "New notification"
-  );
+  const displayMessage = notification.message || (hasRealContent ? "" : "Content hidden by iOS settings");
+  const displayAppName = notification.appDisplayName || formatAppName(notification.appIdentifier);
+  const categoryColor = notification.isImportant ? colors.error : getCategoryColor(notification.categoryId);
 
   return (
     <View className="mb-3 mx-4">
@@ -146,34 +129,28 @@ export function NotificationCard({ notification, onPress, onDelete }: Notificati
           <View className="flex-row items-start gap-3">
             {/* Icon */}
             <View
-              style={{ backgroundColor: getAppColor() }}
               className="w-10 h-10 rounded-full items-center justify-center"
+              style={{ backgroundColor: categoryColor }}
             >
-              <IconSymbol
-                name={getCategoryIcon(notification.categoryId, notification.categoryName) as any}
-                size={20}
-                color="white"
-              />
+              <IconSymbol name={getCategoryIcon(notification.categoryId) as any} size={20} color="white" />
             </View>
 
             {/* Content */}
             <View className="flex-1">
-              {/* Header row with app name and time */}
+              {/* Header row: App name + time */}
               <View className="flex-row items-center justify-between mb-1">
-                <Text className="text-xs font-medium text-primary uppercase tracking-wide">
-                  {notification.categoryName}
+                <Text className="text-xs text-muted uppercase tracking-wide" numberOfLines={1}>
+                  {displayAppName || notification.categoryName}
                 </Text>
                 <Text className="text-xs text-muted">{formatTime(notification.timestamp)}</Text>
               </View>
 
               {/* Title */}
-              {displayTitle && (
-                <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
-                  {displayTitle}
-                </Text>
-              )}
+              <Text className="text-base font-semibold text-foreground" numberOfLines={2}>
+                {displayTitle}
+              </Text>
 
-              {/* Subtitle */}
+              {/* Subtitle (if exists) */}
               {displaySubtitle && (
                 <Text className="text-sm text-foreground mt-0.5" numberOfLines={1}>
                   {displaySubtitle}
@@ -181,12 +158,14 @@ export function NotificationCard({ notification, onPress, onDelete }: Notificati
               )}
 
               {/* Message */}
-              <Text
-                className="text-sm text-muted mt-1"
-                numberOfLines={hasFullDetails ? 3 : 1}
-              >
-                {displayMessage}
-              </Text>
+              {displayMessage && (
+                <Text
+                  className={`text-sm mt-1 ${hasRealContent ? "text-muted" : "text-muted/60 italic"}`}
+                  numberOfLines={3}
+                >
+                  {displayMessage}
+                </Text>
+              )}
 
               {/* Important badge */}
               {notification.isImportant && (

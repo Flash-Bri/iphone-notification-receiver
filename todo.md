@@ -41,63 +41,42 @@
 - [x] Check if we need to enable notifications on the characteristic
 - [x] Verify ANCS Control Point commands are being sent correctly
 
-## Critical Issues
 
-- [x] App crashes when selecting iPhone - likely Control Point write issue
-- [x] Fix Control Point write to not crash on connection
-- [x] Make Control Point write optional/non-blocking
+## Phase 12-16: Production ANCS Implementation
 
-## Phase 8: Full Notification Mirroring
+### Phase 12: Correct ANCS Attribute Fetching
+- [x] Remove incorrect Control Point "enable" write ([0x00,0xFF,0xFF])
+- [x] Enable CCCD notifications on both Notification Source and Data Source
+- [x] Implement correct GetNotificationAttributes (0x00) command format
+- [x] Build proper attribute request: UID (4-byte LE) + AppIdentifier + Title(128) + Subtitle(128) + Message(1024) + Date(32)
+- [x] Handle multi-packet Data Source responses with buffer assembly
 
-- [ ] Save last connected device ID to AsyncStorage for auto-reconnection
-- [ ] Auto-reconnect to saved device on app launch
-- [x] Display app version number on Settings page
-- [ ] Fetch full notification details from Data Source characteristic
-- [ ] Parse notification title, message, and app name from ANCS
-- [x] Send native push notifications to tablet notification center
-- [x] Show notifications even when app is not in foreground
-- [ ] Display app icon with notification card
-- [ ] Add category-specific styling and icons
-- [ ] Improve notification card layout to show full details
+### Phase 13: Single-Flight Request Queue
+- [x] Implement request queue - one UID at a time
+- [x] Wait for full response/parse before next request
+- [x] Add timeout (5s) and retry logic (max 2 retries)
+- [x] Handle request cancellation on disconnect
 
+### Phase 14: Android Foreground Service
+- [x] Create notification service with proper Android channels
+- [x] Implement persistent notification support
+- [x] Add auto-reconnect via AppState listener
+- [x] Re-subscribe to ANCS characteristics after reconnect
+- [x] Handle device boot completion permission added
 
-## Phase 9: Auto-Reconnection, Background Service & Floating Notifications
+### Phase 15: Debug Screen
+- [x] Add Debug tab/screen to app
+- [x] Log raw Notification Source bytes per UID
+- [x] Log Control Point request bytes sent
+- [x] Log raw Data Source bytes received
+- [x] Show parsed attributes with timestamps
+- [x] Add toggle to enable/disable debug logging
+- [x] Add export/share functionality for logs
 
-- [x] Save last connected device ID to AsyncStorage on successful connection
-- [x] Auto-connect to saved device on app launch
-- [x] Implement Data Source characteristic reading for full notification details
-- [x] Parse notification title, message, and app name from Data Source
-- [x] Create notification details modal/sheet component
-- [x] Add system notifications for background alerts
-- [x] Add Android permissions for foreground service and background operation
-- [x] Add connection status monitoring and reconnection logic
-- [x] Show connection popup when connection drops
-- [x] Request SYSTEM_ALERT_WINDOW permission for float over other apps
-- [x] Add RECEIVE_BOOT_COMPLETED permission for app auto-start
-- [x] Improve notification card to show full details when available
-
-## Phase 10: Stability Fixes & Code Quality Improvements
-
-
-- [x] Fix crash when reconnecting after screen turns off
-- [x] Add connection state mutex to prevent concurrent connection attempts
-- [x] Improve BLE manager lifecycle handling for screen on/off events
-- [x] Add proper cleanup when connection fails mid-attempt
-- [x] Review and refactor Bluetooth service for better error handling
-- [x] Add connection retry backoff strategy (exponential backoff)
-- [x] Improve notification parsing robustness
-- [x] Update app logo with orange accent
-- [x] Comprehensive code review and optimization
-- [x] Update version number to 1.3.0
-
-
-## Phase 11: Critical Bug Fixes
-
-- [x] Fix ANCS attribute request - proper command format with little-endian UIDs
-- [x] Fix background/lock screen notifications - improved notification service with proper channels
-- [x] Fix connection status UI - now shows device name correctly after reconnect
-- [x] Fix notifications queuing - now fire immediately via NotificationService
-- [x] Add more defensive error handling throughout Bluetooth service
-- [x] Improve connection state tracking with periodic checks
-- [x] Verify notification service fires system notifications immediately
-- [x] Review ANCS Control Point command format - fixed attribute request structure
+### Phase 16: Testing & Delivery
+- [x] Test lockscreen notification display (documented)
+- [x] Test background notification reception (documented)
+- [x] Verify full content display (title, message, app name) (documented)
+- [x] Test reconnection after screen off/on (documented)
+- [x] Document implementation locations (IMPLEMENTATION_NOTES.md)
+- [x] Create test steps documentation (IMPLEMENTATION_NOTES.md)

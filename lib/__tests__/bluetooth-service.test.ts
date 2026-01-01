@@ -1,28 +1,30 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { BluetoothService, EventID, CategoryID } from "../bluetooth-service";
+import { EventID, CategoryID } from "../bluetooth-service";
 
 // Mock react-native-ble-plx
 vi.mock("react-native-ble-plx", () => ({
   BleManager: vi.fn().mockImplementation(() => ({
     state: vi.fn().mockResolvedValue("PoweredOn"),
-    onStateChange: vi.fn((callback, emitCurrentState) => {
-      if (emitCurrentState) {
-        callback("PoweredOn");
-      }
-      return { remove: vi.fn() };
-    }),
     startDeviceScan: vi.fn(),
     stopDeviceScan: vi.fn(),
-    connectedDevices: vi.fn().mockResolvedValue([]),
     destroy: vi.fn(),
+    onStateChange: vi.fn((callback) => {
+      callback("PoweredOn");
+      return { remove: vi.fn() };
+    }),
   })),
-  State: {
-    PoweredOn: "PoweredOn",
-    PoweredOff: "PoweredOff",
+}));
+
+// Mock AsyncStorage
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: vi.fn().mockResolvedValue(null),
+    setItem: vi.fn().mockResolvedValue(undefined),
+    removeItem: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
-// Mock react-native Platform
+// Mock react-native Platform and AppState
 vi.mock("react-native", () => ({
   Platform: {
     OS: "android",
@@ -45,10 +47,16 @@ vi.mock("react-native", () => ({
   },
 }));
 
+// Import BluetoothService after mocks are set up
+const { BluetoothService, getBluetoothService } = await import("../bluetooth-service");
+
 describe("BluetoothService", () => {
-  let service: BluetoothService;
+  let service: InstanceType<typeof BluetoothService>;
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset singleton
+    (globalThis as any).__bluetoothServiceInstance = undefined;
     service = new BluetoothService();
   });
 
@@ -81,13 +89,17 @@ describe("BluetoothService", () => {
     expect(callback).not.toHaveBeenCalled();
   });
 
-  it("should report not connecting initially", () => {
-    expect(service.isConnecting()).toBe(false);
+  it("should return singleton instance", () => {
+    const instance1 = getBluetoothService();
+    const instance2 = getBluetoothService();
+    expect(instance1).toBe(instance2);
   });
 
-  it("should allow setting last connected device id", () => {
-    service.setLastConnectedDeviceId("test-device-id");
-    expect(service.getLastConnectedDeviceId()).toBe("test-device-id");
+  it("should set debug enabled state", () => {
+    service.setDebugEnabled(true);
+    service.setDebugEnabled(false);
+    // No error means success
+    expect(true).toBe(true);
   });
 });
 

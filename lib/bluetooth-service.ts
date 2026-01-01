@@ -1,31 +1,35 @@
-import { BleManager, Device, Characteristic, Subscription, State } from "react-native-ble-plx";
+import { BleManager, Device, Characteristic, Subscription } from "react-native-ble-plx";
 import { Buffer } from "buffer";
-import { Platform } from "react-native";
+import { Platform, AppState, AppStateStatus } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// ANCS Service and Characteristic UUIDs (lowercase for compatibility)
-const ANCS_SERVICE_UUID = "7905f431-b5ce-4e99-a40f-4b1e122d00d0";
-const NOTIFICATION_SOURCE_UUID = "9fbf120d-6301-42d9-8c58-25e699a21dbd";
-const CONTROL_POINT_UUID = "69d1d8f3-45e1-49a8-9821-9bbdfdaad9d9";
-const DATA_SOURCE_UUID = "22eac6e9-24d6-4bb5-be44-b36ace7c7bfb";
+// ANCS Service and Characteristic UUIDs
+const ANCS_SERVICE_UUID = "7905F431-B5CE-4E99-A40F-4B1E122D00D0";
+const NOTIFICATION_SOURCE_UUID = "9FBF120D-6301-42D9-8C58-25E699A21DBD";
+const CONTROL_POINT_UUID = "69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9";
+const DATA_SOURCE_UUID = "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB";
 
 // ANCS Command IDs
-const CommandID = {
-  GetNotificationAttributes: 0,
-  GetAppAttributes: 1,
-  PerformNotificationAction: 2,
-};
+const CMD_GET_NOTIFICATION_ATTRIBUTES = 0x00;
+const CMD_GET_APP_ATTRIBUTES = 0x01;
+const CMD_PERFORM_NOTIFICATION_ACTION = 0x02;
 
 // ANCS Notification Attribute IDs
-const NotificationAttributeID = {
-  AppIdentifier: 0,
-  Title: 1,
-  Subtitle: 2,
-  Message: 3,
-  MessageSize: 4,
-  Date: 5,
-  PositiveActionLabel: 6,
-  NegativeActionLabel: 7,
-};
+const ATTR_APP_IDENTIFIER = 0x00;
+const ATTR_TITLE = 0x01;
+const ATTR_SUBTITLE = 0x02;
+const ATTR_MESSAGE = 0x03;
+const ATTR_MESSAGE_SIZE = 0x04;
+const ATTR_DATE = 0x05;
+const ATTR_POSITIVE_ACTION_LABEL = 0x06;
+const ATTR_NEGATIVE_ACTION_LABEL = 0x07;
+
+// ANCS App Attribute IDs
+const APP_ATTR_DISPLAY_NAME = 0x00;
+
+// Storage keys
+const LAST_DEVICE_KEY = "@ancs_last_device_id";
+const APP_NAME_CACHE_KEY = "@ancs_app_name_cache";
 
 export interface ANCSNotification {
   id: string;
@@ -37,11 +41,22 @@ export interface ANCSNotification {
   timestamp: number;
   categoryName: string;
   isImportant: boolean;
+  // Extended attributes from Data Source
   appIdentifier?: string;
+  appDisplayName?: string;
   title?: string;
   subtitle?: string;
   message?: string;
   date?: string;
+}
+
+export interface DebugLogEntry {
+  timestamp: number;
+  uid: number;
+  type: "notification_source" | "control_point_request" | "data_source_response" | "parsed_attributes" | "error";
+  rawBytes?: string;
+  parsedData?: any;
+  error?: string;
 }
 
 export enum EventID {
@@ -65,7 +80,7 @@ export enum CategoryID {
   Entertainment = 11,
 }
 
-const CATEGORY_NAMES: Record<number, string> = {
+const CATEGORY_NAMES: Record<CategoryID, string> = {
   [CategoryID.Other]: "Other",
   [CategoryID.IncomingCall]: "Incoming Call",
   [CategoryID.MissedCall]: "Missed Call",
@@ -80,51 +95,51 @@ const CATEGORY_NAMES: Record<number, string> = {
   [CategoryID.Entertainment]: "Entertainment",
 };
 
-const APP_NAMES: Record<string, string> = {
-  "com.apple.MobileSMS": "Messages",
-  "com.apple.mobilemail": "Mail",
-  "com.apple.mobilephone": "Phone",
-  "com.apple.facetime": "FaceTime",
-  "com.facebook.Messenger": "Messenger",
-  "com.facebook.Facebook": "Facebook",
-  "com.atebits.Tweetie2": "Twitter",
-  "com.burbn.instagram": "Instagram",
-  "net.whatsapp.WhatsApp": "WhatsApp",
-  "com.google.Gmail": "Gmail",
-  "com.apple.Preferences": "Settings",
-  "com.apple.mobilecal": "Calendar",
-  "com.apple.reminders": "Reminders",
-  "com.spotify.client": "Spotify",
-  "com.apple.Music": "Music",
-  "com.apple.AccessibilityUtilities.AXNotificationCenter": "System",
-};
-
-// Connection states
-enum ConnectionState {
-  Disconnected = "disconnected",
-  Connecting = "connecting",
-  Connected = "connected",
+// Request queue item
+interface AttributeRequest {
+  uid: number;
+  notification: ANCSNotification;
+  resolve: (notification: ANCSNotification) => void;
+  reject: (error: Error) => void;
+  retryCount: number;
+  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 export class BluetoothService {
   private manager: BleManager | null = null;
   private connectedDevice: Device | null = null;
-  private lastConnectedDeviceId: string | null = null;
-  private lastConnectedDeviceName: string | null = null;
+  private notificationSourceSubscription: Subscription | null = null;
+  private dataSourceSubscription: Subscription | null = null;
+  private disconnectSubscription: Subscription | null = null;
+  private appStateSubscription: any = null;
+  
   private onNotificationCallback: ((notification: ANCSNotification) => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean, deviceName?: string) => void) | null = null;
-  private pendingNotifications: Map<number, ANCSNotification> = new Map();
-  private dataSourceSubscription: Subscription | null = null;
-  private notificationSourceSubscription: Subscription | null = null;
-  private stateSubscription: Subscription | null = null;
-  private disconnectionSubscription: Subscription | null = null;
-  private dataBuffer: Buffer = Buffer.alloc(0);
+  private onDebugLogCallback: ((entry: DebugLogEntry) => void) | null = null;
   
-  private connectionState: ConnectionState = ConnectionState.Disconnected;
-  private connectionLock: boolean = false;
-  private isDestroyed: boolean = false;
+  // Single-flight request queue
+  private requestQueue: AttributeRequest[] = [];
+  private currentRequest: AttributeRequest | null = null;
+  private dataSourceBuffer: Buffer = Buffer.alloc(0);
+  private expectedResponseUid: number | null = null;
+  
+  // App name cache
+  private appNameCache: Map<string, string> = new Map();
+  
+  // Connection state
+  private isConnecting = false;
+  private lastConnectedDeviceId: string | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  
+  // Debug mode
+  private debugEnabled = false;
 
-  constructor() {}
+  constructor() {
+    this.loadAppNameCache();
+    this.loadLastDeviceId();
+    this.setupAppStateListener();
+  }
 
   private getManager(): BleManager {
     if (!this.manager) {
@@ -133,9 +148,72 @@ export class BluetoothService {
     return this.manager;
   }
 
-  private setConnectionState(state: ConnectionState): void {
-    console.log(`[BLE] State: ${this.connectionState} -> ${state}`);
-    this.connectionState = state;
+  private setupAppStateListener(): void {
+    this.appStateSubscription = AppState.addEventListener("change", this.handleAppStateChange.bind(this));
+  }
+
+  private handleAppStateChange(nextAppState: AppStateStatus): void {
+    if (nextAppState === "active" && !this.connectedDevice && this.lastConnectedDeviceId) {
+      console.log("[BLE] App became active, attempting reconnect...");
+      this.attemptReconnect();
+    }
+  }
+
+  private async loadAppNameCache(): Promise<void> {
+    try {
+      const cached = await AsyncStorage.getItem(APP_NAME_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        this.appNameCache = new Map(Object.entries(parsed));
+        console.log("[BLE] Loaded app name cache:", this.appNameCache.size, "entries");
+      }
+    } catch (e) {
+      console.error("[BLE] Failed to load app name cache:", e);
+    }
+  }
+
+  private async saveAppNameCache(): Promise<void> {
+    try {
+      const obj = Object.fromEntries(this.appNameCache);
+      await AsyncStorage.setItem(APP_NAME_CACHE_KEY, JSON.stringify(obj));
+    } catch (e) {
+      console.error("[BLE] Failed to save app name cache:", e);
+    }
+  }
+
+  private async loadLastDeviceId(): Promise<void> {
+    try {
+      this.lastConnectedDeviceId = await AsyncStorage.getItem(LAST_DEVICE_KEY);
+      console.log("[BLE] Last device ID:", this.lastConnectedDeviceId);
+    } catch (e) {
+      console.error("[BLE] Failed to load last device ID:", e);
+    }
+  }
+
+  private async saveLastDeviceId(deviceId: string): Promise<void> {
+    try {
+      this.lastConnectedDeviceId = deviceId;
+      await AsyncStorage.setItem(LAST_DEVICE_KEY, deviceId);
+    } catch (e) {
+      console.error("[BLE] Failed to save last device ID:", e);
+    }
+  }
+
+  // Debug logging
+  setDebugEnabled(enabled: boolean): void {
+    this.debugEnabled = enabled;
+    console.log("[BLE] Debug mode:", enabled ? "enabled" : "disabled");
+  }
+
+  onDebugLog(callback: (entry: DebugLogEntry) => void): void {
+    this.onDebugLogCallback = callback;
+  }
+
+  private logDebug(entry: Omit<DebugLogEntry, "timestamp">): void {
+    if (!this.debugEnabled) return;
+    const fullEntry: DebugLogEntry = { ...entry, timestamp: Date.now() };
+    console.log("[BLE DEBUG]", fullEntry);
+    this.onDebugLogCallback?.(fullEntry);
   }
 
   async initialize(): Promise<void> {
@@ -144,52 +222,40 @@ export class BluetoothService {
       return;
     }
 
-    if (this.isDestroyed) {
-      console.log("[BLE] Service was destroyed, reinitializing...");
-      this.isDestroyed = false;
-      this.manager = null;
-    }
-
     try {
       const manager = this.getManager();
       
-      this.stateSubscription = manager.onStateChange((state: State) => {
-        console.log("[BLE] Bluetooth state:", state);
-        if (state === State.PoweredOff) {
-          this.handleBluetoothOff();
-        }
-      }, true);
-
+      // Wait for Bluetooth to be ready
       const state = await manager.state();
-      console.log("[BLE] Initial state:", state);
+      console.log("[BLE] Bluetooth state:", state);
       
-      if (state !== State.PoweredOn) {
+      if (state !== "PoweredOn") {
+        // Wait for state change
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error("Bluetooth timeout")), 10000);
-          const sub = manager.onStateChange((newState: State) => {
-            if (newState === State.PoweredOn) {
-              clearTimeout(timeout);
-              sub.remove();
+          const subscription = manager.onStateChange((newState) => {
+            console.log("[BLE] State changed to:", newState);
+            if (newState === "PoweredOn") {
+              subscription.remove();
               resolve();
+            } else if (newState === "PoweredOff" || newState === "Unsupported") {
+              subscription.remove();
+              reject(new Error(`Bluetooth is ${newState}`));
             }
           }, true);
+          
+          // Timeout after 10 seconds
+          setTimeout(() => {
+            subscription.remove();
+            reject(new Error("Bluetooth initialization timeout"));
+          }, 10000);
         });
       }
       
       console.log("[BLE] Initialized successfully");
     } catch (error) {
-      console.error("[BLE] Init error:", error);
+      console.error("[BLE] Initialization error:", error);
       throw error;
     }
-  }
-
-  private handleBluetoothOff(): void {
-    console.log("[BLE] Bluetooth off, cleaning up...");
-    this.cleanupSubscriptions();
-    this.connectedDevice = null;
-    this.setConnectionState(ConnectionState.Disconnected);
-    this.connectionLock = false;
-    this.onConnectionChangeCallback?.(false);
   }
 
   onNotification(callback: (notification: ANCSNotification) => void): void {
@@ -200,199 +266,172 @@ export class BluetoothService {
     this.onConnectionChangeCallback = callback;
   }
 
-  async getPairedDevices(): Promise<Device[]> {
-    try {
-      const devices = await this.getManager().connectedDevices([ANCS_SERVICE_UUID]);
-      return devices;
-    } catch (error) {
-      console.error("[BLE] Error getting devices:", error);
-      return [];
-    }
-  }
-
   async discoverDevices(): Promise<Device[]> {
-    if (this.isDestroyed) return [];
-
+    console.log("[BLE] Starting device discovery...");
+    
     return new Promise((resolve) => {
-      const discovered: Map<string, Device> = new Map();
+      const discoveredDevices: Map<string, Device> = new Map();
+      
+      const handleScanResult = (error: any, device: Device | null) => {
+        if (error) {
+          console.error("[BLE] Scan error:", error);
+          return;
+        }
+        
+        if (device && device.id) {
+          if (!discoveredDevices.has(device.id)) {
+            console.log("[BLE] Found device:", device.name || device.id);
+            discoveredDevices.set(device.id, device);
+          }
+        }
+      };
 
       try {
-        this.getManager().startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
-          if (error) {
-            console.error("[BLE] Scan error:", error);
-            return;
-          }
-          if (device?.id && !discovered.has(device.id)) {
-            console.log("[BLE] Found:", device.name || device.id);
-            discovered.set(device.id, device);
-          }
-        });
-
-        setTimeout(() => {
-          try {
-            this.getManager().stopDeviceScan();
-          } catch (e) {}
-          resolve(Array.from(discovered.values()));
-        }, 5000);
-      } catch (error) {
-        console.error("[BLE] Scan start error:", error);
+        this.getManager().startDeviceScan(null, { allowDuplicates: false }, handleScanResult);
+      } catch (e) {
+        console.error("[BLE] Failed to start scan:", e);
         resolve([]);
+        return;
       }
+
+      setTimeout(() => {
+        try {
+          this.getManager().stopDeviceScan();
+        } catch (e) {
+          console.error("[BLE] Failed to stop scan:", e);
+        }
+        const devices = Array.from(discoveredDevices.values());
+        console.log("[BLE] Scan complete. Found", devices.length, "devices");
+        resolve(devices);
+      }, 5000);
     });
   }
 
   async connectToDevice(device: Device): Promise<void> {
-    if (this.connectionLock) {
-      console.log("[BLE] Connection in progress");
-      throw new Error("Connection in progress");
-    }
-
-    if (this.isDestroyed) {
-      throw new Error("Service destroyed");
-    }
-
-    if (this.connectedDevice?.id === device.id && this.connectionState === ConnectionState.Connected) {
-      console.log("[BLE] Already connected");
+    if (this.isConnecting) {
+      console.log("[BLE] Already connecting, ignoring request");
       return;
     }
 
-    this.connectionLock = true;
-    this.setConnectionState(ConnectionState.Connecting);
+    this.isConnecting = true;
+    console.log("[BLE] Connecting to device:", device.name || device.id);
 
     try {
-      try { this.getManager().stopDeviceScan(); } catch (e) {}
-      await this.cleanupExistingConnection();
-
-      console.log("[BLE] Connecting to:", device.name || device.id);
-
-      const isConnected = await device.isConnected();
-      let connectedDevice: Device;
-
-      if (isConnected) {
-        console.log("[BLE] Already connected at system level");
-        connectedDevice = device;
-      } else {
-        connectedDevice = await Promise.race([
-          device.connect({ autoConnect: false }),
-          new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error("Connection timeout")), 15000)
-          ),
-        ]);
+      // Stop any ongoing scan
+      try {
+        this.getManager().stopDeviceScan();
+      } catch (e) {
+        // Ignore
       }
 
-      this.connectedDevice = connectedDevice;
-      this.lastConnectedDeviceId = device.id;
-      this.lastConnectedDeviceName = device.name || "iPhone";
+      // Disconnect existing connection
+      if (this.connectedDevice) {
+        await this.cleanupConnection();
+      }
 
-      console.log("[BLE] Discovering services...");
+      // Connect to device
+      const connectedDevice = await device.connect({ timeout: 10000 });
+      console.log("[BLE] Connected, discovering services...");
+
+      // Discover services and characteristics
       await connectedDevice.discoverAllServicesAndCharacteristics();
+      console.log("[BLE] Services discovered");
 
-      console.log("[BLE] Setting up ANCS...");
-      await this.setupANCS(connectedDevice);
+      this.connectedDevice = connectedDevice;
+      await this.saveLastDeviceId(device.id);
+      this.reconnectAttempts = 0;
 
-      this.setConnectionState(ConnectionState.Connected);
-      this.onConnectionChangeCallback?.(true, device.name || "iPhone");
+      // Setup ANCS subscriptions
+      await this.setupANCSSubscriptions(connectedDevice);
 
-      this.disconnectionSubscription = connectedDevice.onDisconnected((error) => {
-        console.log("[BLE] Disconnected", error ? `error: ${error}` : "");
-        this.handleDisconnection();
+      // Monitor disconnection
+      this.disconnectSubscription = connectedDevice.onDisconnected((error) => {
+        console.log("[BLE] Device disconnected:", error?.message || "No error");
+        this.handleDisconnect();
       });
 
-      console.log("[BLE] Connected successfully");
-    } catch (error) {
+      this.onConnectionChangeCallback?.(true, device.name || "iPhone");
+      console.log("[BLE] Connection setup complete");
+
+    } catch (error: any) {
       console.error("[BLE] Connection error:", error);
-      this.cleanupSubscriptions();
-      this.connectedDevice = null;
-      this.setConnectionState(ConnectionState.Disconnected);
-      this.onConnectionChangeCallback?.(false);
+      this.logDebug({ uid: 0, type: "error", error: `Connection failed: ${error.message}` });
+      await this.cleanupConnection();
       throw error;
     } finally {
-      this.connectionLock = false;
+      this.isConnecting = false;
     }
   }
 
-  private async cleanupExistingConnection(): Promise<void> {
-    this.cleanupSubscriptions();
-    this.pendingNotifications.clear();
-    this.dataBuffer = Buffer.alloc(0);
-    
-    if (this.connectedDevice) {
-      try {
-        const isConnected = await this.connectedDevice.isConnected();
-        if (isConnected) {
-          await this.connectedDevice.cancelConnection();
-        }
-      } catch (e) {}
-      this.connectedDevice = null;
-    }
-  }
+  private async setupANCSSubscriptions(device: Device): Promise<void> {
+    console.log("[BLE] Setting up ANCS subscriptions...");
 
-  private handleDisconnection(): void {
-    console.log("[BLE] Handling disconnection...");
-    this.cleanupSubscriptions();
-    this.connectedDevice = null;
-    this.setConnectionState(ConnectionState.Disconnected);
-    this.connectionLock = false;
-    this.onConnectionChangeCallback?.(false);
-  }
-
-  private cleanupSubscriptions(): void {
-    [this.dataSourceSubscription, this.notificationSourceSubscription, this.disconnectionSubscription].forEach(sub => {
-      try { sub?.remove(); } catch (e) {}
-    });
-    this.dataSourceSubscription = null;
-    this.notificationSourceSubscription = null;
-    this.disconnectionSubscription = null;
-  }
-
-  private async setupANCS(device: Device): Promise<void> {
     try {
-      console.log("[BLE] Subscribing to Data Source...");
+      // IMPORTANT: Subscribe to Data Source FIRST before Notification Source
+      // This is required by ANCS spec - Data Source must be ready to receive responses
+      console.log("[BLE] Subscribing to Data Source characteristic...");
       this.dataSourceSubscription = device.monitorCharacteristicForService(
         ANCS_SERVICE_UUID,
         DATA_SOURCE_UUID,
-        (error, characteristic) => {
-          if (error) {
-            console.error("[BLE] Data Source error:", error.message);
-            return;
-          }
-          if (characteristic?.value) {
-            this.handleDataSourceResponse(characteristic);
-          }
-        }
+        this.handleDataSourceNotification.bind(this)
       );
 
-      // Small delay before subscribing to Notification Source
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Small delay to ensure Data Source subscription is active
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-      console.log("[BLE] Subscribing to Notification Source...");
+      // Now subscribe to Notification Source
+      console.log("[BLE] Subscribing to Notification Source characteristic...");
       this.notificationSourceSubscription = device.monitorCharacteristicForService(
         ANCS_SERVICE_UUID,
         NOTIFICATION_SOURCE_UUID,
-        (error, characteristic) => {
-          if (error) {
-            console.error("[BLE] Notification Source error:", error.message);
-            return;
-          }
-          if (characteristic?.value) {
-            this.handleNotificationSource(characteristic);
-          }
-        }
+        this.handleNotificationSourceNotification.bind(this)
       );
 
-      console.log("[BLE] ANCS setup complete");
-    } catch (error) {
-      console.error("[BLE] ANCS setup failed:", error);
+      console.log("[BLE] ANCS subscriptions active");
+      
+      // NOTE: We do NOT write anything to Control Point here.
+      // Control Point is ONLY used to request notification attributes AFTER receiving a notification.
+      // CCCD subscription (monitorCharacteristicForService) automatically enables notifications.
+
+    } catch (error: any) {
+      console.error("[BLE] Failed to setup ANCS subscriptions:", error);
+      this.logDebug({ uid: 0, type: "error", error: `ANCS setup failed: ${error.message}` });
       throw error;
     }
   }
 
-  private handleNotificationSource(characteristic: Characteristic): void {
-    try {
-      if (!characteristic.value) return;
+  private handleNotificationSourceNotification(error: any, characteristic: Characteristic | null): void {
+    if (error) {
+      console.error("[BLE] Notification Source error:", error);
+      this.logDebug({ uid: 0, type: "error", error: `Notification Source error: ${error.message}` });
+      return;
+    }
 
+    if (!characteristic?.value) {
+      return;
+    }
+
+    try {
       const data = Buffer.from(characteristic.value, "base64");
-      if (data.length < 8) return;
+      
+      // Log raw bytes
+      this.logDebug({
+        uid: data.length >= 8 ? data.readUInt32LE(4) : 0,
+        type: "notification_source",
+        rawBytes: data.toString("hex"),
+      });
+
+      // ANCS Notification Source format (8 bytes):
+      // [0] EventID (1 byte)
+      // [1] EventFlags (1 byte)
+      // [2] CategoryID (1 byte)
+      // [3] CategoryCount (1 byte)
+      // [4-7] NotificationUID (4 bytes, little-endian)
+
+      if (data.length < 8) {
+        console.warn("[BLE] Invalid notification data length:", data.length);
+        return;
+      }
 
       const eventId = data[0];
       const eventFlags = data[1];
@@ -400,13 +439,15 @@ export class BluetoothService {
       const categoryCount = data[3];
       const notificationUid = data.readUInt32LE(4);
 
-      console.log(`[BLE] Notification: event=${eventId}, category=${categoryId}, uid=${notificationUid}`);
+      console.log(`[BLE] Notification Source: EventID=${eventId}, CategoryID=${categoryId}, UID=${notificationUid}`);
 
-      // Only process new notifications
-      if (eventId !== EventID.Added) {
-        console.log("[BLE] Skipping non-add event");
+      // Only process Added and Modified events
+      if (eventId === EventID.Removed) {
+        console.log("[BLE] Notification removed, ignoring");
         return;
       }
+
+      const isImportant = (eventFlags & 0x01) !== 0;
 
       const notification: ANCSNotification = {
         id: `${notificationUid}-${Date.now()}`,
@@ -416,231 +457,511 @@ export class BluetoothService {
         categoryCount,
         notificationUid,
         timestamp: Date.now(),
-        categoryName: CATEGORY_NAMES[categoryId] || "Notification",
-        isImportant: (eventFlags & 0x01) !== 0 || categoryId === CategoryID.IncomingCall,
+        categoryName: CATEGORY_NAMES[categoryId as CategoryID] || "Unknown",
+        isImportant,
       };
 
-      this.pendingNotifications.set(notificationUid, notification);
-      
-      // Request full notification attributes
-      this.requestNotificationAttributes(notificationUid);
+      // Queue attribute request for this notification
+      this.queueAttributeRequest(notification);
 
-      // Fallback: deliver after timeout if attributes don't arrive
-      setTimeout(() => {
-        const pending = this.pendingNotifications.get(notificationUid);
-        if (pending) {
-          console.log("[BLE] Timeout - delivering without full attributes");
-          this.pendingNotifications.delete(notificationUid);
-          this.deliverNotification(pending);
-        }
-      }, 5000);
-    } catch (error) {
-      console.error("[BLE] Error parsing notification:", error);
+    } catch (error: any) {
+      console.error("[BLE] Error parsing notification source:", error);
+      this.logDebug({ uid: 0, type: "error", error: `Parse error: ${error.message}` });
     }
   }
 
-  private requestNotificationAttributes(notificationUid: number): void {
-    if (!this.connectedDevice || this.connectionState !== ConnectionState.Connected) {
-      console.log("[BLE] Cannot request attributes - not connected");
+  private handleDataSourceNotification(error: any, characteristic: Characteristic | null): void {
+    if (error) {
+      console.error("[BLE] Data Source error:", error);
+      this.logDebug({ uid: 0, type: "error", error: `Data Source error: ${error.message}` });
+      return;
+    }
+
+    if (!characteristic?.value) {
       return;
     }
 
     try {
-      // Build the Get Notification Attributes command according to ANCS spec
-      // Format: CommandID (1) + NotificationUID (4) + AttributeID + MaxLen pairs
-      const parts: number[] = [
-        CommandID.GetNotificationAttributes,
-        // NotificationUID (4 bytes, little endian)
-        notificationUid & 0xff,
-        (notificationUid >> 8) & 0xff,
-        (notificationUid >> 16) & 0xff,
-        (notificationUid >> 24) & 0xff,
-        // App Identifier (no max length needed)
-        NotificationAttributeID.AppIdentifier,
-        // Title with max length 255
-        NotificationAttributeID.Title,
-        0xff, 0x00, // 255 in little endian
-        // Subtitle with max length 255
-        NotificationAttributeID.Subtitle,
-        0xff, 0x00,
-        // Message with max length 500
-        NotificationAttributeID.Message,
-        0xf4, 0x01, // 500 in little endian
-        // Date
-        NotificationAttributeID.Date,
-      ];
-
-      const command = Buffer.from(parts);
-      console.log(`[BLE] Requesting attributes for UID ${notificationUid}, cmd length: ${command.length}`);
-
-      this.connectedDevice
-        .writeCharacteristicWithResponseForService(
-          ANCS_SERVICE_UUID,
-          CONTROL_POINT_UUID,
-          command.toString("base64")
-        )
-        .then(() => {
-          console.log("[BLE] Attribute request sent");
-        })
-        .catch((error: any) => {
-          console.error("[BLE] Attribute request failed:", error?.message);
-          // Try without response as fallback
-          this.connectedDevice?.writeCharacteristicWithoutResponseForService(
-            ANCS_SERVICE_UUID,
-            CONTROL_POINT_UUID,
-            command.toString("base64")
-          ).catch(() => {});
-        });
-    } catch (error) {
-      console.error("[BLE] Error building attribute request:", error);
-    }
-  }
-
-  private handleDataSourceResponse(characteristic: Characteristic): void {
-    try {
-      if (!characteristic.value) return;
-
-      const newData = Buffer.from(characteristic.value, "base64");
-      console.log(`[BLE] Data Source received ${newData.length} bytes`);
-
-      // Accumulate data (responses can be fragmented)
-      this.dataBuffer = Buffer.concat([this.dataBuffer, newData]);
-
-      // Try to parse complete responses
-      this.parseDataBuffer();
-    } catch (error) {
-      console.error("[BLE] Data Source error:", error);
-    }
-  }
-
-  private parseDataBuffer(): void {
-    while (this.dataBuffer.length >= 5) {
-      const commandId = this.dataBuffer[0];
+      const data = Buffer.from(characteristic.value, "base64");
       
-      if (commandId !== CommandID.GetNotificationAttributes) {
-        // Unknown command, skip one byte
-        this.dataBuffer = this.dataBuffer.slice(1);
-        continue;
-      }
+      // Log raw bytes
+      this.logDebug({
+        uid: this.expectedResponseUid || 0,
+        type: "data_source_response",
+        rawBytes: data.toString("hex"),
+      });
 
-      const notificationUid = this.dataBuffer.readUInt32LE(1);
-      console.log(`[BLE] Parsing attributes for UID: ${notificationUid}`);
+      // Append to buffer for multi-packet assembly
+      this.dataSourceBuffer = Buffer.concat([this.dataSourceBuffer, data]);
 
-      const pending = this.pendingNotifications.get(notificationUid);
-      if (!pending) {
-        console.log("[BLE] No pending notification for UID:", notificationUid);
-        // Try to skip this response
-        this.dataBuffer = this.dataBuffer.slice(5);
-        continue;
-      }
+      // Try to parse the response
+      this.tryParseDataSourceResponse();
 
-      // Parse attributes
-      let offset = 5;
-      let complete = false;
-      let attributesParsed = 0;
-
-      while (offset < this.dataBuffer.length) {
-        if (offset >= this.dataBuffer.length) break;
-        
-        const attributeId = this.dataBuffer[offset];
-        offset++;
-
-        // Check if we have length bytes
-        if (offset + 2 > this.dataBuffer.length) {
-          // Need more data
-          break;
-        }
-
-        const length = this.dataBuffer.readUInt16LE(offset);
-        offset += 2;
-
-        // Check if we have the full value
-        if (offset + length > this.dataBuffer.length) {
-          // Need more data
-          offset -= 3; // Rewind
-          break;
-        }
-
-        const value = this.dataBuffer.slice(offset, offset + length).toString("utf8");
-        offset += length;
-        attributesParsed++;
-
-        console.log(`[BLE] Attribute ${attributeId}: "${value.substring(0, 50)}${value.length > 50 ? '...' : ''}"`);
-
-        switch (attributeId) {
-          case NotificationAttributeID.AppIdentifier:
-            pending.appIdentifier = value;
-            if (APP_NAMES[value]) {
-              pending.categoryName = APP_NAMES[value];
-            }
-            break;
-          case NotificationAttributeID.Title:
-            pending.title = value;
-            break;
-          case NotificationAttributeID.Subtitle:
-            pending.subtitle = value;
-            break;
-          case NotificationAttributeID.Message:
-            pending.message = value;
-            break;
-          case NotificationAttributeID.Date:
-            pending.date = value;
-            complete = true; // Date is our last requested attribute
-            break;
-        }
-      }
-
-      // Consume parsed data
-      this.dataBuffer = this.dataBuffer.slice(offset);
-
-      // If we parsed at least some attributes, deliver the notification
-      if (attributesParsed > 0 || complete) {
-        console.log(`[BLE] Delivering notification: title="${pending.title}", msg="${pending.message?.substring(0, 30)}..."`);
-        this.pendingNotifications.delete(notificationUid);
-        this.deliverNotification(pending);
-      }
+    } catch (error: any) {
+      console.error("[BLE] Error handling data source:", error);
+      this.logDebug({ uid: this.expectedResponseUid || 0, type: "error", error: `Data source error: ${error.message}` });
     }
   }
 
-  private deliverNotification(notification: ANCSNotification): void {
-    console.log(`[BLE] Delivering: ${notification.categoryName} - ${notification.title || 'No title'}`);
-    this.onNotificationCallback?.(notification);
+  private queueAttributeRequest(notification: ANCSNotification): void {
+    console.log(`[BLE] Queueing attribute request for UID ${notification.notificationUid}`);
+
+    const request: AttributeRequest = {
+      uid: notification.notificationUid,
+      notification,
+      resolve: () => {},
+      reject: () => {},
+      retryCount: 0,
+    };
+
+    // Create promise for this request
+    const promise = new Promise<ANCSNotification>((resolve, reject) => {
+      request.resolve = resolve;
+      request.reject = reject;
+    });
+
+    this.requestQueue.push(request);
+
+    // Process queue if not already processing
+    if (!this.currentRequest) {
+      this.processNextRequest();
+    }
+
+    // Handle the result
+    promise
+      .then((enrichedNotification) => {
+        console.log(`[BLE] Notification enriched:`, enrichedNotification);
+        this.onNotificationCallback?.(enrichedNotification);
+      })
+      .catch((error) => {
+        console.error(`[BLE] Failed to enrich notification:`, error);
+        // Still send the notification with basic info
+        this.onNotificationCallback?.(notification);
+      });
   }
 
-  async disconnect(): Promise<void> {
-    console.log("[BLE] Disconnecting...");
-    this.cleanupSubscriptions();
+  private async processNextRequest(): Promise<void> {
+    if (this.currentRequest || this.requestQueue.length === 0) {
+      return;
+    }
+
+    this.currentRequest = this.requestQueue.shift()!;
+    const { uid, notification } = this.currentRequest;
+
+    console.log(`[BLE] Processing attribute request for UID ${uid}`);
+
+    // Reset buffer and expected UID
+    this.dataSourceBuffer = Buffer.alloc(0);
+    this.expectedResponseUid = uid;
+
+    // Set timeout for this request (5 seconds)
+    this.currentRequest.timeoutId = setTimeout(() => {
+      console.warn(`[BLE] Attribute request timeout for UID ${uid}`);
+      this.handleRequestTimeout();
+    }, 5000);
+
+    try {
+      await this.sendGetNotificationAttributesCommand(uid);
+    } catch (error: any) {
+      console.error(`[BLE] Failed to send attribute request:`, error);
+      this.handleRequestError(error);
+    }
+  }
+
+  private async sendGetNotificationAttributesCommand(uid: number): Promise<void> {
+    if (!this.connectedDevice) {
+      throw new Error("Not connected");
+    }
+
+    // Build GetNotificationAttributes command
+    // Format: CommandID (1) + NotificationUID (4, LE) + AttributeIDs with lengths
     
+    // Attributes we want:
+    // - AppIdentifier (0x00) - no length
+    // - Title (0x01) - max length 128
+    // - Subtitle (0x02) - max length 128  
+    // - Message (0x03) - max length 1024
+    // - Date (0x05) - max length 32
+
+    const command = Buffer.alloc(1 + 4 + 1 + 3 + 3 + 3 + 3);
+    let offset = 0;
+
+    // Command ID
+    command.writeUInt8(CMD_GET_NOTIFICATION_ATTRIBUTES, offset);
+    offset += 1;
+
+    // Notification UID (4 bytes, little-endian)
+    command.writeUInt32LE(uid, offset);
+    offset += 4;
+
+    // AppIdentifier (no length parameter)
+    command.writeUInt8(ATTR_APP_IDENTIFIER, offset);
+    offset += 1;
+
+    // Title with max length 128
+    command.writeUInt8(ATTR_TITLE, offset);
+    offset += 1;
+    command.writeUInt16LE(128, offset);
+    offset += 2;
+
+    // Subtitle with max length 128
+    command.writeUInt8(ATTR_SUBTITLE, offset);
+    offset += 1;
+    command.writeUInt16LE(128, offset);
+    offset += 2;
+
+    // Message with max length 1024
+    command.writeUInt8(ATTR_MESSAGE, offset);
+    offset += 1;
+    command.writeUInt16LE(1024, offset);
+    offset += 2;
+
+    // Date with max length 32
+    command.writeUInt8(ATTR_DATE, offset);
+    offset += 1;
+    command.writeUInt16LE(32, offset);
+    offset += 2;
+
+    // Log the command
+    this.logDebug({
+      uid,
+      type: "control_point_request",
+      rawBytes: command.toString("hex"),
+    });
+
+    console.log(`[BLE] Sending GetNotificationAttributes for UID ${uid}, command: ${command.toString("hex")}`);
+
+    // Write to Control Point
+    await this.connectedDevice.writeCharacteristicWithResponseForService(
+      ANCS_SERVICE_UUID,
+      CONTROL_POINT_UUID,
+      command.toString("base64")
+    );
+
+    console.log(`[BLE] GetNotificationAttributes command sent`);
+  }
+
+  private tryParseDataSourceResponse(): void {
+    if (!this.currentRequest || this.dataSourceBuffer.length < 5) {
+      return;
+    }
+
+    try {
+      // Data Source response format:
+      // CommandID (1) + NotificationUID (4, LE) + Attribute data...
+      
+      const commandId = this.dataSourceBuffer.readUInt8(0);
+      const uid = this.dataSourceBuffer.readUInt32LE(1);
+
+      if (commandId !== CMD_GET_NOTIFICATION_ATTRIBUTES) {
+        console.warn(`[BLE] Unexpected command ID in response: ${commandId}`);
+        return;
+      }
+
+      if (uid !== this.expectedResponseUid) {
+        console.warn(`[BLE] UID mismatch: expected ${this.expectedResponseUid}, got ${uid}`);
+        return;
+      }
+
+      // Try to parse all attributes
+      const attributes = this.parseAttributes(this.dataSourceBuffer.slice(5));
+      
+      if (attributes === null) {
+        // Need more data
+        console.log(`[BLE] Waiting for more data packets...`);
+        return;
+      }
+
+      // Successfully parsed all attributes
+      console.log(`[BLE] Parsed attributes for UID ${uid}:`, attributes);
+
+      this.logDebug({
+        uid,
+        type: "parsed_attributes",
+        parsedData: attributes,
+      });
+
+      // Enrich the notification
+      const enrichedNotification: ANCSNotification = {
+        ...this.currentRequest.notification,
+        appIdentifier: attributes.appIdentifier,
+        title: attributes.title,
+        subtitle: attributes.subtitle,
+        message: attributes.message,
+        date: attributes.date,
+      };
+
+      // Look up app display name
+      if (attributes.appIdentifier) {
+        const cachedName = this.appNameCache.get(attributes.appIdentifier);
+        if (cachedName) {
+          enrichedNotification.appDisplayName = cachedName;
+        } else {
+          // Queue app attribute request (async, don't wait)
+          this.requestAppDisplayName(attributes.appIdentifier);
+        }
+      }
+
+      // Clear timeout and resolve
+      if (this.currentRequest.timeoutId) {
+        clearTimeout(this.currentRequest.timeoutId);
+      }
+      this.currentRequest.resolve(enrichedNotification);
+      this.currentRequest = null;
+      this.dataSourceBuffer = Buffer.alloc(0);
+      this.expectedResponseUid = null;
+
+      // Process next request
+      this.processNextRequest();
+
+    } catch (error: any) {
+      console.error(`[BLE] Error parsing data source response:`, error);
+      // Don't fail yet - might need more data
+    }
+  }
+
+  private parseAttributes(data: Buffer): { appIdentifier?: string; title?: string; subtitle?: string; message?: string; date?: string } | null {
+    const attributes: { appIdentifier?: string; title?: string; subtitle?: string; message?: string; date?: string } = {};
+    let offset = 0;
+    let parsedCount = 0;
+    const expectedAttributes = 5; // AppIdentifier, Title, Subtitle, Message, Date
+
+    while (offset < data.length && parsedCount < expectedAttributes) {
+      if (offset + 1 > data.length) {
+        // Need more data for attribute ID
+        return null;
+      }
+
+      const attrId = data.readUInt8(offset);
+      offset += 1;
+
+      if (offset + 2 > data.length) {
+        // Need more data for length
+        return null;
+      }
+
+      const attrLength = data.readUInt16LE(offset);
+      offset += 2;
+
+      if (offset + attrLength > data.length) {
+        // Need more data for value
+        return null;
+      }
+
+      const attrValue = data.slice(offset, offset + attrLength).toString("utf8");
+      offset += attrLength;
+      parsedCount++;
+
+      switch (attrId) {
+        case ATTR_APP_IDENTIFIER:
+          attributes.appIdentifier = attrValue;
+          break;
+        case ATTR_TITLE:
+          attributes.title = attrValue;
+          break;
+        case ATTR_SUBTITLE:
+          attributes.subtitle = attrValue;
+          break;
+        case ATTR_MESSAGE:
+          attributes.message = attrValue;
+          break;
+        case ATTR_DATE:
+          attributes.date = attrValue;
+          break;
+      }
+    }
+
+    // Check if we have all expected attributes
+    if (parsedCount < expectedAttributes && offset >= data.length) {
+      // We've consumed all data but don't have all attributes - need more
+      return null;
+    }
+
+    return attributes;
+  }
+
+  private async requestAppDisplayName(appIdentifier: string): Promise<void> {
+    if (!this.connectedDevice || this.appNameCache.has(appIdentifier)) {
+      return;
+    }
+
+    try {
+      // Build GetAppAttributes command
+      // Format: CommandID (1) + AppIdentifier (null-terminated string) + AttributeID (1)
+      const appIdBuffer = Buffer.from(appIdentifier + "\0", "utf8");
+      const command = Buffer.alloc(1 + appIdBuffer.length + 1);
+      
+      command.writeUInt8(CMD_GET_APP_ATTRIBUTES, 0);
+      appIdBuffer.copy(command, 1);
+      command.writeUInt8(APP_ATTR_DISPLAY_NAME, 1 + appIdBuffer.length);
+
+      console.log(`[BLE] Requesting app display name for: ${appIdentifier}`);
+
+      await this.connectedDevice.writeCharacteristicWithResponseForService(
+        ANCS_SERVICE_UUID,
+        CONTROL_POINT_UUID,
+        command.toString("base64")
+      );
+
+      // Note: Response will come via Data Source, but we handle it separately
+      // For now, we'll use the bundle ID as fallback
+
+    } catch (error) {
+      console.error(`[BLE] Failed to request app display name:`, error);
+    }
+  }
+
+  private handleRequestTimeout(): void {
+    if (!this.currentRequest) return;
+
+    const { uid, notification, retryCount } = this.currentRequest;
+    
+    if (retryCount < 2) {
+      // Retry
+      console.log(`[BLE] Retrying attribute request for UID ${uid} (attempt ${retryCount + 2})`);
+      this.currentRequest.retryCount++;
+      this.dataSourceBuffer = Buffer.alloc(0);
+      
+      this.sendGetNotificationAttributesCommand(uid).catch((error) => {
+        this.handleRequestError(error);
+      });
+    } else {
+      // Max retries reached, resolve with basic notification
+      console.warn(`[BLE] Max retries reached for UID ${uid}, using basic notification`);
+      
+      // Add fallback message
+      const fallbackNotification: ANCSNotification = {
+        ...notification,
+        message: "Content hidden by iOS settings",
+      };
+      
+      this.currentRequest.resolve(fallbackNotification);
+      this.currentRequest = null;
+      this.dataSourceBuffer = Buffer.alloc(0);
+      this.expectedResponseUid = null;
+      
+      this.processNextRequest();
+    }
+  }
+
+  private handleRequestError(error: Error): void {
+    if (!this.currentRequest) return;
+
+    if (this.currentRequest.timeoutId) {
+      clearTimeout(this.currentRequest.timeoutId);
+    }
+
+    this.currentRequest.reject(error);
+    this.currentRequest = null;
+    this.dataSourceBuffer = Buffer.alloc(0);
+    this.expectedResponseUid = null;
+
+    this.processNextRequest();
+  }
+
+  private handleDisconnect(): void {
+    console.log("[BLE] Handling disconnect...");
+    this.cleanupConnection();
+    this.onConnectionChangeCallback?.(false);
+
+    // Attempt reconnect if we have a last device ID
+    if (this.lastConnectedDeviceId && this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+      console.log(`[BLE] Will attempt reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
+      
+      setTimeout(() => {
+        this.attemptReconnect();
+      }, delay);
+    }
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    if (!this.lastConnectedDeviceId || this.isConnecting || this.connectedDevice) {
+      return;
+    }
+
+    console.log(`[BLE] Attempting reconnect to ${this.lastConnectedDeviceId}...`);
+
+    try {
+      const devices = await this.discoverDevices();
+      const targetDevice = devices.find(d => d.id === this.lastConnectedDeviceId);
+      
+      if (targetDevice) {
+        await this.connectToDevice(targetDevice);
+      } else {
+        console.log("[BLE] Last device not found in scan");
+      }
+    } catch (error) {
+      console.error("[BLE] Reconnect failed:", error);
+    }
+  }
+
+  private async cleanupConnection(): Promise<void> {
+    console.log("[BLE] Cleaning up connection...");
+
+    // Cancel current request
+    if (this.currentRequest) {
+      if (this.currentRequest.timeoutId) {
+        clearTimeout(this.currentRequest.timeoutId);
+      }
+      this.currentRequest.reject(new Error("Connection lost"));
+      this.currentRequest = null;
+    }
+
+    // Clear request queue
+    this.requestQueue.forEach(req => {
+      if (req.timeoutId) clearTimeout(req.timeoutId);
+      req.reject(new Error("Connection lost"));
+    });
+    this.requestQueue = [];
+
+    // Remove subscriptions
+    if (this.notificationSourceSubscription) {
+      this.notificationSourceSubscription.remove();
+      this.notificationSourceSubscription = null;
+    }
+    if (this.dataSourceSubscription) {
+      this.dataSourceSubscription.remove();
+      this.dataSourceSubscription = null;
+    }
+    if (this.disconnectSubscription) {
+      this.disconnectSubscription.remove();
+      this.disconnectSubscription = null;
+    }
+
+    // Disconnect device
     if (this.connectedDevice) {
       try {
         await this.connectedDevice.cancelConnection();
-      } catch (e) {}
+      } catch (e) {
+        // Ignore
+      }
       this.connectedDevice = null;
     }
-    
-    this.setConnectionState(ConnectionState.Disconnected);
-    this.connectionLock = false;
+
+    // Reset state
+    this.dataSourceBuffer = Buffer.alloc(0);
+    this.expectedResponseUid = null;
+    this.isConnecting = false;
+  }
+
+  async disconnect(): Promise<void> {
+    this.reconnectAttempts = this.maxReconnectAttempts; // Prevent auto-reconnect
+    await this.cleanupConnection();
     this.onConnectionChangeCallback?.(false);
   }
 
   isConnected(): boolean {
-    return this.connectionState === ConnectionState.Connected && this.connectedDevice !== null;
+    return this.connectedDevice !== null;
   }
 
-  isConnecting(): boolean {
-    return this.connectionState === ConnectionState.Connecting || this.connectionLock;
-  }
-
-  getConnectionState(): ConnectionState {
-    return this.connectionState;
+  getIsConnecting(): boolean {
+    return this.isConnecting;
   }
 
   getConnectedDeviceName(): string | null {
-    return this.connectedDevice?.name || this.lastConnectedDeviceName || null;
-  }
-
-  setLastConnectedDeviceId(deviceId: string | null): void {
-    this.lastConnectedDeviceId = deviceId;
+    return this.connectedDevice?.name || null;
   }
 
   getLastConnectedDeviceId(): string | null {
@@ -648,43 +969,35 @@ export class BluetoothService {
   }
 
   destroy(): void {
-    console.log("[BLE] Destroying...");
-    this.isDestroyed = true;
-    this.cleanupSubscriptions();
+    console.log("[BLE] Destroying service...");
     
-    try { this.stateSubscription?.remove(); } catch (e) {}
-    this.stateSubscription = null;
-    
-    if (this.connectedDevice) {
-      try { this.connectedDevice.cancelConnection(); } catch (e) {}
-      this.connectedDevice = null;
+    if (this.appStateSubscription) {
+      this.appStateSubscription.remove();
+      this.appStateSubscription = null;
     }
-    
+
+    this.cleanupConnection();
+
     if (this.manager) {
-      try { this.manager.destroy(); } catch (e) {}
+      this.manager.destroy();
       this.manager = null;
     }
-    
-    this.setConnectionState(ConnectionState.Disconnected);
-    this.connectionLock = false;
-    this.pendingNotifications.clear();
-    this.dataBuffer = Buffer.alloc(0);
   }
 }
 
-// Singleton
-let instance: BluetoothService | null = null;
+// Singleton instance
+let bluetoothServiceInstance: BluetoothService | null = null;
 
 export function getBluetoothService(): BluetoothService {
-  if (!instance) {
-    instance = new BluetoothService();
+  if (!bluetoothServiceInstance) {
+    bluetoothServiceInstance = new BluetoothService();
   }
-  return instance;
+  return bluetoothServiceInstance;
 }
 
 export function resetBluetoothService(): void {
-  if (instance) {
-    instance.destroy();
-    instance = null;
+  if (bluetoothServiceInstance) {
+    bluetoothServiceInstance.destroy();
+    bluetoothServiceInstance = null;
   }
 }

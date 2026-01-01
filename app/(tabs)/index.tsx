@@ -4,345 +4,190 @@ import * as Haptics from "expo-haptics";
 import { ScreenContainer } from "@/components/screen-container";
 import { NotificationCard } from "@/components/notification-card";
 import { DeviceSelectionModal } from "@/components/device-selection-modal";
-import { NotificationDetailModal } from "@/components/notification-detail-modal";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { getBluetoothService, ANCSNotification } from "@/lib/bluetooth-service";
+import { getBluetoothService, ANCSNotification, DebugLogEntry } from "@/lib/bluetooth-service";
 import { getNotificationStorage } from "@/lib/notification-storage";
 import { NotificationService } from "@/lib/notification-service";
 import { PermissionsAndroid } from "react-native";
 import { Device } from "react-native-ble-plx";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
-const LAST_DEVICE_KEY = "@lastConnectedDeviceId";
-const LAST_DEVICE_NAME_KEY = "@lastConnectedDeviceName";
 
 export default function HomeScreen() {
   const colors = useColors();
   const [notifications, setNotifications] = useState<ANCSNotification[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [deviceName, setDeviceName] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const [showConnectionPopup, setShowConnectionPopup] = useState(false);
-  const [selectedNotification, setSelectedNotification] = useState<ANCSNotification | null>(null);
-  const [showDetailModal, setShowDetailModal] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
 
+  const bluetoothService = getBluetoothService();
   const notificationStorage = getNotificationStorage();
   const appState = useRef(AppState.currentState);
-  const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 3;
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isReconnectingRef = useRef(false);
-  const savedDeviceNameRef = useRef<string>("");
+  const foregroundNotificationId = useRef<string | null>(null);
 
   useEffect(() => {
     initializeApp();
 
+    // Listen for app state changes
     const subscription = AppState.addEventListener("change", handleAppStateChange);
 
     return () => {
       subscription.remove();
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
     };
   }, []);
 
-  // Update connection status display
-  useEffect(() => {
-    const checkConnection = setInterval(() => {
-      const bluetoothService = getBluetoothService();
-      const connected = bluetoothService.isConnected();
+  const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+    if (appState.current.match(/inactive|background/) && nextAppState === "active") {
+      console.log("[HomeScreen] App came to foreground");
+      // Refresh connection status
+      setIsConnected(bluetoothService.isConnected());
+      setIsConnecting(bluetoothService.getIsConnecting());
       const name = bluetoothService.getConnectedDeviceName();
-      
-      if (connected !== isConnected) {
-        setIsConnected(connected);
-      }
-      if (name && name !== deviceName) {
-        setDeviceName(name);
-      }
-    }, 2000);
-
-    return () => clearInterval(checkConnection);
-  }, [isConnected, deviceName]);
-
-  const handleAppStateChange = useCallback(async (nextAppState: AppStateStatus) => {
-    const previousState = appState.current;
+      if (name) setDeviceName(name);
+    }
     appState.current = nextAppState;
-
-    console.log(`[App] State: ${previousState} -> ${nextAppState}`);
-
-    if (previousState.match(/inactive|background/) && nextAppState === "active") {
-      console.log("[App] Foreground - checking connection");
-      
-      setTimeout(async () => {
-        const bluetoothService = getBluetoothService();
-        
-        // Update UI state
-        setIsConnected(bluetoothService.isConnected());
-        const name = bluetoothService.getConnectedDeviceName();
-        if (name) setDeviceName(name);
-        
-        if (!bluetoothService.isConnected() && !bluetoothService.isConnecting() && !isReconnectingRef.current) {
-          console.log("[App] Not connected, reconnecting...");
-          await attemptAutoReconnect();
-        }
-      }, 300);
-    }
-  }, []);
-
-  const attemptAutoReconnect = async () => {
-    if (isReconnectingRef.current) {
-      console.log("[Reconnect] Already in progress");
-      return;
-    }
-
-    const bluetoothService = getBluetoothService();
-    
-    if (bluetoothService.isConnected() || bluetoothService.isConnecting()) {
-      console.log("[Reconnect] Already connected/connecting");
-      return;
-    }
-
-    const lastDeviceId = await AsyncStorage.getItem(LAST_DEVICE_KEY);
-    const lastDeviceName = await AsyncStorage.getItem(LAST_DEVICE_NAME_KEY);
-
-    if (!lastDeviceId) {
-      console.log("[Reconnect] No saved device");
-      setShowConnectionPopup(true);
-      return;
-    }
-
-    if (reconnectAttempts.current >= maxReconnectAttempts) {
-      console.log("[Reconnect] Max attempts reached");
-      setShowConnectionPopup(true);
-      reconnectAttempts.current = 0;
-      return;
-    }
-
-    isReconnectingRef.current = true;
-    setIsReconnecting(true);
-    reconnectAttempts.current++;
-
-    if (lastDeviceName) {
-      savedDeviceNameRef.current = lastDeviceName;
-      setDeviceName(lastDeviceName);
-    }
-
-    console.log(`[Reconnect] Attempt ${reconnectAttempts.current}/${maxReconnectAttempts}`);
-
-    try {
-      await bluetoothService.initialize();
-      
-      const devices = await bluetoothService.discoverDevices();
-      const lastDevice = devices.find((d) => d.id === lastDeviceId);
-
-      if (lastDevice) {
-        console.log("[Reconnect] Found device, connecting...");
-        await bluetoothService.connectToDevice(lastDevice);
-        setSelectedDeviceId(lastDeviceId);
-        setIsConnected(true);
-        if (lastDeviceName) setDeviceName(lastDeviceName);
-        reconnectAttempts.current = 0;
-        setShowConnectionPopup(false);
-      } else {
-        console.log("[Reconnect] Device not found");
-        if (reconnectAttempts.current < maxReconnectAttempts) {
-          scheduleReconnect(5000);
-        } else {
-          setShowConnectionPopup(true);
-        }
-      }
-    } catch (error: any) {
-      console.error("[Reconnect] Failed:", error?.message);
-      
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        const delay = Math.min(5000 * Math.pow(2, reconnectAttempts.current - 1), 30000);
-        scheduleReconnect(delay);
-      } else {
-        setShowConnectionPopup(true);
-      }
-    } finally {
-      isReconnectingRef.current = false;
-      setIsReconnecting(false);
-    }
-  };
-
-  const scheduleReconnect = (delay: number) => {
-    console.log(`[Reconnect] Retry in ${delay}ms`);
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    reconnectTimeoutRef.current = setTimeout(() => {
-      attemptAutoReconnect();
-    }, delay);
   };
 
   const initializeApp = async () => {
     try {
-      // Initialize notification service FIRST (before Bluetooth)
-      console.log("[Init] Initializing notification service...");
-      const notifPermission = await NotificationService.initialize();
-      console.log("[Init] Notification permission:", notifPermission);
+      console.log("[HomeScreen] Initializing app...");
 
-      // Request Android Bluetooth permissions
+      // Initialize notification service FIRST (for background notifications)
+      console.log("[HomeScreen] Initializing notification service...");
+      const notifReady = await NotificationService.initialize();
+      console.log("[HomeScreen] Notification service ready:", notifReady);
+
+      // Request Android permissions
       if (Platform.OS === "android") {
+        console.log("[HomeScreen] Requesting Android permissions...");
         const granted = await PermissionsAndroid.requestMultiple([
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
         ]);
 
-        const allGranted = Object.values(granted).every(
-          (status) => status === "granted" || status === "never_ask_again"
-        );
-        if (!allGranted) {
+        console.log("[HomeScreen] Permission results:", granted);
+
+        const bleGranted =
+          granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === "granted" &&
+          granted[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === "granted";
+
+        if (!bleGranted) {
           Alert.alert(
             "Permissions Required",
-            "Bluetooth and location permissions are required."
+            "Bluetooth permissions are required to receive notifications from iPhone."
           );
+          return;
         }
       }
 
-      // Load saved device name for display
-      const savedName = await AsyncStorage.getItem(LAST_DEVICE_NAME_KEY);
-      if (savedName) {
-        savedDeviceNameRef.current = savedName;
-      }
-
-      const bluetoothService = getBluetoothService();
-
-      // Initialize Bluetooth
-      if (Platform.OS !== "web") {
-        await bluetoothService.initialize();
-      }
+      // Initialize Bluetooth service
+      console.log("[HomeScreen] Initializing Bluetooth service...");
+      await bluetoothService.initialize();
 
       // Load stored notifications
       const stored = await notificationStorage.getAllNotifications();
       setNotifications(stored);
+      console.log("[HomeScreen] Loaded", stored.length, "stored notifications");
 
       // Set up notification listener - THIS IS CRITICAL
-      bluetoothService.onNotification(async (notification) => {
-        console.log(`[Notification] Received: ${notification.categoryName} - ${notification.title}`);
-        
-        // Save to storage
-        await notificationStorage.saveNotification(notification);
-        
-        // Update UI
-        setNotifications((prev) => [notification, ...prev]);
-
-        // IMMEDIATELY send system notification
-        const sent = await NotificationService.sendNotification({
-          title: notification.title || notification.categoryName || "iPhone Notification",
-          body: notification.message || notification.subtitle || `New ${notification.categoryName} notification`,
-          subtitle: notification.subtitle,
-          categoryName: notification.categoryName,
-          isImportant: notification.isImportant,
-          appIdentifier: notification.appIdentifier,
-        });
-        
-        console.log(`[Notification] System notification sent: ${sent}`);
-
-        // Haptic feedback
-        if (Platform.OS !== "web") {
-          try {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          } catch (e) {}
-        }
-      });
+      bluetoothService.onNotification(handleNewNotification);
 
       // Set up connection listener
-      bluetoothService.onConnectionChange(async (connected, name) => {
-        console.log(`[Connection] Changed: ${connected}, name: ${name}`);
+      bluetoothService.onConnectionChange((connected, name) => {
+        console.log("[HomeScreen] Connection changed:", connected, name);
         setIsConnected(connected);
-        if (name) {
-          setDeviceName(name);
-        } else if (!connected && savedDeviceNameRef.current) {
-          // Keep showing saved device name even when disconnected
-          setDeviceName(savedDeviceNameRef.current);
-        }
+        setIsConnecting(false);
+        if (name) setDeviceName(name);
 
-        if (!connected && !isReconnectingRef.current) {
-          console.log("[Connection] Lost, scheduling reconnect...");
-          scheduleReconnect(3000);
+        // Show alert if disconnected unexpectedly
+        if (!connected && deviceName) {
+          Alert.alert(
+            "Connection Lost",
+            `Disconnected from ${deviceName}. The app will try to reconnect automatically.`,
+            [{ text: "OK" }]
+          );
         }
       });
 
-      setIsInitialized(true);
+      // Set up debug log listener
+      bluetoothService.onDebugLog((entry) => {
+        setDebugLogs((prev) => [entry, ...prev].slice(0, 100)); // Keep last 100 entries
+      });
 
-      // Auto-reconnect
-      if (Platform.OS !== "web") {
-        await attemptAutoReconnect();
+      // Check if we have a last connected device and try to auto-connect
+      const lastDeviceId = bluetoothService.getLastConnectedDeviceId();
+      if (lastDeviceId) {
+        console.log("[HomeScreen] Found last device ID, attempting auto-connect...");
+        setIsConnecting(true);
+        // Auto-connect will happen via the service's internal logic
       }
-    } catch (error: any) {
-      console.error("[Init] Error:", error?.message);
-      setIsInitialized(true);
-      
-      if (Platform.OS !== "web") {
-        Alert.alert("Error", "Could not initialize. Please check Bluetooth settings.");
-      }
+
+      console.log("[HomeScreen] Initialization complete");
+    } catch (error) {
+      console.error("[HomeScreen] Initialization error:", error);
+      Alert.alert("Error", "Failed to initialize. Please restart the app.");
+    }
+  };
+
+  const handleNewNotification = async (notification: ANCSNotification) => {
+    console.log("[HomeScreen] New notification received:", notification);
+
+    // Save to storage
+    await notificationStorage.saveNotification(notification);
+
+    // Update UI
+    setNotifications((prev) => [notification, ...prev]);
+
+    // CRITICAL: Send system notification immediately
+    // This ensures notification shows on lockscreen/notification shade
+    const sent = await NotificationService.sendNotification(notification);
+    console.log("[HomeScreen] System notification sent:", sent);
+
+    // Haptic feedback for new notification (only if app is in foreground)
+    if (Platform.OS !== "web" && appState.current === "active") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+  };
+
+  const loadAvailableDevices = async () => {
+    setLoadingDevices(true);
+    try {
+      const devices = await bluetoothService.discoverDevices();
+      setAvailableDevices(devices);
+      console.log("[HomeScreen] Discovered devices:", devices.map((d: Device) => d.name));
+    } catch (error) {
+      console.error("[HomeScreen] Error loading devices:", error);
+      Alert.alert("Error", "Failed to load Bluetooth devices.");
+    } finally {
+      setLoadingDevices(false);
     }
   };
 
   const handleSelectDevice = async (device: Device) => {
-    const bluetoothService = getBluetoothService();
-    
-    if (bluetoothService.isConnecting()) {
-      console.log("[Select] Already connecting");
-      return;
-    }
-
     try {
       setSelectedDeviceId(device.id);
+      setIsConnecting(true);
       setShowDeviceModal(false);
-      setShowConnectionPopup(false);
-
       await bluetoothService.connectToDevice(device);
-
-      // Save for auto-reconnection
-      await AsyncStorage.setItem(LAST_DEVICE_KEY, device.id);
-      if (device.name) {
-        await AsyncStorage.setItem(LAST_DEVICE_NAME_KEY, device.name);
-        savedDeviceNameRef.current = device.name;
-        setDeviceName(device.name);
-      }
-      bluetoothService.setLastConnectedDeviceId(device.id);
-      reconnectAttempts.current = 0;
-      setIsConnected(true);
     } catch (error: any) {
-      console.error("[Select] Error:", error?.message);
-      Alert.alert("Connection Failed", `Could not connect to ${device.name || "device"}.`);
+      console.error("[HomeScreen] Connection error:", error);
+      Alert.alert("Connection Failed", `Could not connect to ${device.name}. ${error.message || "Please try again."}`);
       setSelectedDeviceId("");
-      setIsConnected(false);
+      setIsConnecting(false);
     }
   };
 
   const handleOpenDeviceModal = async () => {
-    const bluetoothService = getBluetoothService();
-    
     setShowDeviceModal(true);
-    setShowConnectionPopup(false);
-    setLoadingDevices(true);
-    
-    try {
-      if (Platform.OS !== "web") {
-        await bluetoothService.initialize();
-      }
-      
-      const scannedDevices = await bluetoothService.discoverDevices();
-      setAvailableDevices(scannedDevices);
-    } catch (error: any) {
-      console.error("[Modal] Error:", error?.message);
-      Alert.alert("Error", "Failed to discover devices.");
-    } finally {
-      setLoadingDevices(false);
-    }
+    await loadAvailableDevices();
   };
 
   const handleDeleteNotification = async (id: string) => {
@@ -354,7 +199,7 @@ export default function HomeScreen() {
   };
 
   const handleClearAll = () => {
-    Alert.alert("Clear All", "Clear all notifications?", [
+    Alert.alert("Clear All Notifications", "Are you sure you want to clear all notifications?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Clear",
@@ -364,6 +209,7 @@ export default function HomeScreen() {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           }
           await notificationStorage.clearAll();
+          await NotificationService.clearAllNotifications();
           setNotifications([]);
         },
       },
@@ -378,110 +224,137 @@ export default function HomeScreen() {
   }, []);
 
   const handleNotificationPress = (notification: ANCSNotification) => {
-    setSelectedNotification(notification);
-    setShowDetailModal(true);
+    // Build detail message
+    let details = "";
+    if (notification.appIdentifier) {
+      details += `App: ${notification.appDisplayName || notification.appIdentifier}\n`;
+    }
+    if (notification.title) {
+      details += `Title: ${notification.title}\n`;
+    }
+    if (notification.subtitle) {
+      details += `Subtitle: ${notification.subtitle}\n`;
+    }
+    if (notification.message) {
+      details += `Message: ${notification.message}\n`;
+    }
+    if (notification.date) {
+      details += `Date: ${notification.date}\n`;
+    }
+    details += `\nCategory: ${notification.categoryName}`;
+    details += `\nUID: ${notification.notificationUid}`;
+    details += `\nImportant: ${notification.isImportant ? "Yes" : "No"}`;
+
+    Alert.alert(
+      notification.title || notification.categoryName,
+      details,
+      [{ text: "OK" }]
+    );
   };
 
-  const handleDeleteFromModal = () => {
-    if (selectedNotification) {
-      handleDeleteNotification(selectedNotification.id);
+  const toggleDebug = () => {
+    const newState = !showDebug;
+    setShowDebug(newState);
+    bluetoothService.setDebugEnabled(newState);
+    if (newState) {
+      Alert.alert("Debug Mode", "Debug logging is now enabled. Raw BLE data will be captured.");
     }
   };
 
   const getConnectionStatusText = () => {
-    if (isConnected && deviceName) {
-      return deviceName;
-    }
-    if (isConnected) {
-      return "Connected";
-    }
-    if (isReconnecting) {
-      return `Reconnecting${deviceName ? ` to ${deviceName}` : ""}...`;
-    }
-    if (deviceName || savedDeviceNameRef.current) {
-      return `Tap to connect to ${deviceName || savedDeviceNameRef.current}`;
-    }
+    if (isConnecting) return "Connecting...";
+    if (isConnected) return `Connected to ${deviceName}`;
     return "Tap to select iPhone";
   };
 
   const getConnectionStatusColor = () => {
-    if (isConnected) return "bg-success";
-    if (isReconnecting) return "bg-warning";
-    return "bg-muted";
+    if (isConnecting) return colors.warning;
+    if (isConnected) return colors.success;
+    return colors.muted;
   };
 
   return (
     <ScreenContainer>
-      {/* Connection Popup */}
-      {showConnectionPopup && !isConnected && !isReconnecting && (
-        <View className="absolute top-0 left-0 right-0 z-50 bg-warning/95 px-4 py-3">
-          <View className="flex-row items-center justify-between">
-            <View className="flex-row items-center gap-2 flex-1">
-              <IconSymbol name="bluetooth" size={20} color="#000" />
-              <Text className="text-sm font-medium text-black flex-1">
-                Not connected to iPhone
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleOpenDeviceModal}
-              style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
-            >
-              <View className="bg-black/20 px-3 py-1.5 rounded-full">
-                <Text className="text-sm font-semibold text-black">Connect</Text>
-              </View>
-            </Pressable>
-          </View>
-        </View>
-      )}
-
       {/* Header */}
-      <View className="px-4 pt-2 pb-4">
-        <View className="flex-row items-center justify-between mb-4">
-          <Text className="text-3xl font-bold text-foreground">Notifications</Text>
-          {notifications.length > 0 && (
+      <View className="px-4 pt-4 pb-3 border-b border-border">
+        <View className="flex-row items-center justify-between mb-3">
+          <Text className="text-2xl font-bold text-foreground">Notifications</Text>
+          <View className="flex-row items-center gap-2">
+            {/* Debug Toggle */}
             <Pressable
-              onPress={handleClearAll}
+              onPress={toggleDebug}
               style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
             >
-              <Text className="text-base text-primary font-medium">Clear All</Text>
+              <View className={`px-2 py-1 rounded-full ${showDebug ? "bg-warning/20" : "bg-surface"}`}>
+                <IconSymbol name="bug" size={18} color={showDebug ? colors.warning : colors.muted} />
+              </View>
             </Pressable>
-          )}
+            {/* Clear All */}
+            {notifications.length > 0 && (
+              <Pressable
+                onPress={handleClearAll}
+                style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+              >
+                <View className="flex-row items-center gap-1 px-3 py-1.5 bg-error/10 rounded-full">
+                  <IconSymbol name="trash" size={16} color={colors.error} />
+                  <Text className="text-sm font-medium text-error">Clear</Text>
+                </View>
+              </Pressable>
+            )}
+          </View>
         </View>
 
         {/* Connection Status */}
         <Pressable
           onPress={handleOpenDeviceModal}
-          disabled={isReconnecting}
-          style={({ pressed }) => [{ opacity: pressed && !isReconnecting ? 0.7 : 1 }]}
+          style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+          disabled={isConnecting}
         >
-          <View
-            className={`flex-row items-center gap-3 p-3 rounded-xl border ${
-              isConnected ? "bg-success/10 border-success/30" : "bg-surface border-border"
-            }`}
-          >
-            <View className={`w-3 h-3 rounded-full ${getConnectionStatusColor()}`} />
-            <Text
-              className={`flex-1 text-sm ${isConnected ? "text-success font-medium" : "text-muted"}`}
-              numberOfLines={1}
-            >
-              {getConnectionStatusText()}
-            </Text>
-            <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+          <View className="flex-row items-center justify-between bg-surface rounded-lg px-3 py-2 border border-border">
+            <View className="flex-row items-center gap-2 flex-1">
+              <View
+                style={{ backgroundColor: getConnectionStatusColor() }}
+                className="w-2 h-2 rounded-full"
+              />
+              <IconSymbol name="bluetooth" size={18} color={getConnectionStatusColor()} />
+              <Text className="text-sm text-muted flex-1" numberOfLines={1}>
+                {getConnectionStatusText()}
+              </Text>
+            </View>
+            <IconSymbol name="chevron.right" size={18} color={colors.muted} />
           </View>
         </Pressable>
       </View>
 
+      {/* Debug Panel */}
+      {showDebug && debugLogs.length > 0 && (
+        <View className="bg-surface border-b border-border px-4 py-2 max-h-40">
+          <Text className="text-xs font-bold text-warning mb-1">Debug Log (last {debugLogs.length} entries)</Text>
+          <FlatList
+            data={debugLogs.slice(0, 10)}
+            keyExtractor={(_, index) => index.toString()}
+            renderItem={({ item }) => (
+              <Text className="text-xs text-muted font-mono" numberOfLines={2}>
+                [{item.type}] UID:{item.uid} {item.rawBytes ? `bytes:${item.rawBytes.substring(0, 30)}...` : ""} {item.error || ""}
+              </Text>
+            )}
+          />
+        </View>
+      )}
+
       {/* Notification List */}
       {notifications.length === 0 ? (
-        <View className="flex-1 items-center justify-center px-8">
+        <View className="flex-1 items-center justify-center px-6">
           <IconSymbol name="bell.fill" size={64} color={colors.muted} />
-          <Text className="text-xl font-semibold text-foreground mt-4 text-center">
+          <Text className="text-lg font-semibold text-foreground mt-4 text-center">
             No Notifications Yet
           </Text>
-          <Text className="text-sm text-muted mt-2 text-center">
-            {isConnected 
+          <Text className="text-sm text-muted mt-2 text-center leading-relaxed">
+            {isConnected
               ? "Notifications from your iPhone will appear here"
-              : "Connect to your iPhone to start receiving notifications"}
+              : isConnecting
+              ? "Connecting to your iPhone..."
+              : "Select your iPhone from the connection area above to start receiving notifications"}
           </Text>
         </View>
       ) : (
@@ -495,14 +368,10 @@ export default function HomeScreen() {
               onDelete={() => handleDeleteNotification(item.id)}
             />
           )}
+          contentContainerStyle={{ paddingTop: 16, paddingBottom: 16 }}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={colors.primary}
-            />
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
           }
-          contentContainerStyle={{ paddingBottom: 100 }}
         />
       )}
 
@@ -514,14 +383,7 @@ export default function HomeScreen() {
         selectedDeviceId={selectedDeviceId}
         onSelectDevice={handleSelectDevice}
         onClose={() => setShowDeviceModal(false)}
-      />
-
-      {/* Notification Detail Modal */}
-      <NotificationDetailModal
-        notification={selectedNotification}
-        visible={showDetailModal}
-        onClose={() => setShowDetailModal(false)}
-        onDelete={handleDeleteFromModal}
+        onRefresh={loadAvailableDevices}
       />
     </ScreenContainer>
   );
