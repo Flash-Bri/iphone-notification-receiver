@@ -18,7 +18,7 @@ const {
 const path = require("path");
 const fs = require("fs");
 
-const IMPORT_STATEMENT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
+const BASE_IMPORT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
 const PACKAGE_NAME = "AncsServicePackage";
 
 /**
@@ -140,19 +140,26 @@ function patchMainApplication(config) {
   return withMainApplication(config, (config) => {
     let content = config.modResults.contents;
     const isKotlin = config.modResults.language === 'kt' || content.includes('class MainApplication : Application');
+    const importStatement = isKotlin ? BASE_IMPORT : `${BASE_IMPORT};`;
 
     // 1. Idempotent Import Injection
-    if (!content.includes(IMPORT_STATEMENT)) {
+    // Match import with or without semicolon and varying whitespace
+    const importRegex = new RegExp(`import\\s+space\\.manus\\.iphone\\.notification\\.receiver\\.AncsServicePackage;?\\s*`, 'g');
+    
+    if (!importRegex.test(content)) {
       const lines = content.split('\n');
       const lastImportIndex = lines.findLastIndex(line => line.trim().startsWith('import '));
       
       if (lastImportIndex !== -1) {
-        lines.splice(lastImportIndex + 1, 0, IMPORT_STATEMENT);
+        lines.splice(lastImportIndex + 1, 0, importStatement);
         content = lines.join('\n');
       } else {
         // Fallback: after package declaration
-        content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${IMPORT_STATEMENT}\n`);
+        content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${importStatement}\n`);
       }
+    } else if (!isKotlin && !content.includes(`${BASE_IMPORT};`)) {
+      // Fix missing semicolon in Java
+      content = content.replace(importRegex, `${importStatement}\n`);
     }
 
     // 2. Idempotent Package Registration

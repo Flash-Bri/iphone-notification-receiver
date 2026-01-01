@@ -14,7 +14,6 @@ if (!fs.existsSync(androidDir)) {
   process.exit(1);
 }
 
-// Find MainApplication file (could be .kt or .java)
 const searchDir = path.join(androidDir, 'app', 'src', 'main', 'java');
 let mainAppPath = null;
 
@@ -42,17 +41,32 @@ if (!mainAppPath) {
   process.exit(1);
 }
 
-console.log(`🔍 Checking ${path.relative(projectRoot, mainAppPath)}...`);
+const isKotlin = mainAppPath.endsWith('.kt');
+console.log(`🔍 Checking ${path.relative(projectRoot, mainAppPath)} (${isKotlin ? 'Kotlin' : 'Java'})...`);
 
 const content = fs.readFileSync(mainAppPath, 'utf8');
-const hasImport = content.includes('import space.manus.iphone.notification.receiver.AncsServicePackage');
-const hasRegistration = content.includes('AncsServicePackage()') || content.includes('new AncsServicePackage()');
+const baseImport = 'import space.manus.iphone.notification.receiver.AncsServicePackage';
+const expectedImport = isKotlin ? baseImport : `${baseImport};`;
+
+const hasImport = content.includes(expectedImport);
+const hasRegistration = isKotlin 
+  ? content.includes('packages.add(AncsServicePackage())')
+  : content.includes('packages.add(new AncsServicePackage())');
 
 if (hasImport && hasRegistration) {
   console.log('✅ Success: AncsServicePackage is correctly registered in MainApplication!');
   process.exit(0);
 } else {
-  if (!hasImport) console.error('❌ Error: Missing import statement in MainApplication');
-  if (!hasRegistration) console.error('❌ Error: Missing package registration in MainApplication');
+  if (!hasImport) {
+    if (!isKotlin && content.includes(baseImport)) {
+      console.error(`❌ Error: Java import is missing the required semicolon: "${baseImport}"`);
+    } else {
+      console.error(`❌ Error: Missing import statement: "${expectedImport}"`);
+    }
+  }
+  if (!hasRegistration) {
+    const expectedReg = isKotlin ? 'packages.add(AncsServicePackage())' : 'packages.add(new AncsServicePackage())';
+    console.error(`❌ Error: Missing package registration: "${expectedReg}"`);
+  }
   process.exit(1);
 }

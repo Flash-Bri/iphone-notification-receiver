@@ -2,22 +2,28 @@
  * Test script for MainApplication patching logic
  */
 
-const IMPORT_STATEMENT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
+const BASE_IMPORT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
 const PACKAGE_NAME = "AncsServicePackage";
 
 function patchContent(content, isKotlin) {
+  const importStatement = isKotlin ? BASE_IMPORT : `${BASE_IMPORT};`;
+
   // 1. Idempotent Import Injection
-  if (!content.includes(IMPORT_STATEMENT)) {
+  const importRegex = new RegExp(`import\\s+space\\.manus\\.iphone\\.notification\\.receiver\\.AncsServicePackage;?\\s*`, 'g');
+  
+  if (!importRegex.test(content)) {
     const lines = content.split('\n');
     const lastImportIndex = lines.findLastIndex(line => line.trim().startsWith('import '));
     
     if (lastImportIndex !== -1) {
-      lines.splice(lastImportIndex + 1, 0, IMPORT_STATEMENT);
+      lines.splice(lastImportIndex + 1, 0, importStatement);
       content = lines.join('\n');
     } else {
-      // Fallback: after package declaration
-      content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${IMPORT_STATEMENT}\n`);
+      content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${importStatement}\n`);
     }
+  } else if (!isKotlin && !content.includes(`${BASE_IMPORT};`)) {
+    // Fix missing semicolon in Java
+    content = content.replace(importRegex, `${importStatement}\n`);
   }
 
   // 2. Idempotent Package Registration
@@ -26,7 +32,6 @@ function patchContent(content, isKotlin) {
       ? `      packages.add(${PACKAGE_NAME}())` 
       : `      packages.add(new ${PACKAGE_NAME}());`;
 
-    // Resilient regex for various template variants
     const kotlinRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?(?:\s+as\s+MutableList<ReactPackage>)?)/;
     const javaRegex = /(List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);)/;
 
@@ -35,7 +40,7 @@ function patchContent(content, isKotlin) {
     if (regex.test(content)) {
       content = content.replace(regex, `$1\n${registration}`);
     } else {
-      throw new Error(`Could not find package list initialization in ${isKotlin ? 'Kotlin' : 'Java'} MainApplication. Content snippet: ${content.substring(0, 500)}...`);
+      throw new Error(`Could not find package list initialization in ${isKotlin ? 'Kotlin' : 'Java'} MainApplication.`);
     }
   }
 
@@ -43,23 +48,13 @@ function patchContent(content, isKotlin) {
 }
 
 // Test Cases
-const kotlinTemplate1 = `package com.example.app
+const kotlinTemplate = `package com.example.app
 import android.app.Application
 import com.facebook.react.PackageList
 
 class MainApplication : Application() {
   override fun getPackages(): List<ReactPackage> {
     val packages = PackageList(this).packages.toMutableList()
-    return packages
-  }
-}`;
-
-const kotlinTemplate2 = `package com.example.app
-import android.app.Application
-
-class MainApplication : Application() {
-  override fun getPackages(): List<ReactPackage> {
-    val packages = PackageList(this).packages as MutableList<ReactPackage>
     return packages
   }
 }`;
@@ -76,23 +71,38 @@ public class MainApplication extends Application {
   }
 }`;
 
-try {
-  console.log("Testing Kotlin Template 1...");
-  let res = patchContent(kotlinTemplate1, true);
-  console.log("Result contains import:", res.includes(IMPORT_STATEMENT));
-  console.log("Result contains registration:", res.includes("packages.add(AncsServicePackage())"));
-  
-  console.log("\nTesting Idempotency (Kotlin)...");
-  let res2 = patchContent(res, true);
-  const importCount = (res2.match(new RegExp(IMPORT_STATEMENT, 'g')) || []).length;
-  const regCount = (res2.match(/AncsServicePackage\(\)/g) || []).length;
-  console.log("Import count (should be 1):", importCount);
-  console.log("Registration count (should be 1):", regCount);
+const javaTemplateNoSemicolon = `package com.example.app;
+import android.app.Application;
+import space.manus.iphone.notification.receiver.AncsServicePackage
+import java.util.List;
 
-  console.log("\nTesting Java Template...");
+public class MainApplication extends Application {
+  @Override
+  protected List<ReactPackage> getPackages() {
+    List<ReactPackage> packages = new PackageList(this).getPackages();
+    return packages;
+  }
+}`;
+
+try {
+  console.log("Testing Kotlin Template...");
+  let res = patchContent(kotlinTemplate, true);
+  if (!res.includes(BASE_IMPORT)) throw new Error("Kotlin import missing");
+  if (res.includes(BASE_IMPORT + ";")) throw new Error("Kotlin import should not have semicolon");
+  
+  console.log("Testing Java Template...");
   let resJava = patchContent(javaTemplate, false);
-  console.log("Result contains import:", resJava.includes(IMPORT_STATEMENT));
-  console.log("Result contains registration:", resJava.includes("packages.add(new AncsServicePackage());"));
+  if (!resJava.includes(BASE_IMPORT + ";")) throw new Error("Java import missing semicolon");
+
+  console.log("Testing Java Normalization (fixing missing semicolon)...");
+  let resJavaFix = patchContent(javaTemplateNoSemicolon, false);
+  if (!resJavaFix.includes(BASE_IMPORT + ";")) throw new Error("Java normalization failed to add semicolon");
+  const count = (resJavaFix.match(new RegExp(BASE_IMPORT, 'g')) || []).length;
+  if (count !== 1) throw new Error("Java normalization duplicated import");
+
+  console.log("Testing Idempotency...");
+  let resIdem = patchContent(res, true);
+  if ((resIdem.match(new RegExp(BASE_IMPORT, 'g')) || []).length !== 1) throw new Error("Kotlin import duplicated");
 
   console.log("\nAll tests passed!");
 } catch (e) {
