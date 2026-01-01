@@ -7,7 +7,7 @@
  * It handles:
  * 1. AndroidManifest.xml permissions and service/receiver declarations
  * 2. Copying native Kotlin source files
- * 3. Patching MainApplication to register the AncsServicePackage
+ * 3. Patching MainApplication to register the AncsServicePackage (Robust & Idempotent)
  */
 
 const {
@@ -17,6 +17,9 @@ const {
 } = require("@expo/config-plugins");
 const path = require("path");
 const fs = require("fs");
+
+const IMPORT_STATEMENT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
+const PACKAGE_NAME = "AncsServicePackage";
 
 /**
  * Add permissions to AndroidManifest.xml
@@ -136,33 +139,42 @@ function addServiceAndReceiver(androidManifest) {
 function patchMainApplication(config) {
   return withMainApplication(config, (config) => {
     let content = config.modResults.contents;
+    const isKotlin = config.modResults.language === 'kt' || content.includes('class MainApplication : Application');
 
-    // 1. Add import
-    const importStatement = "import space.manus.iphone.notification.receiver.AncsServicePackage";
-    if (!content.includes(importStatement)) {
-      // Add after other imports
-      content = content.replace(
-        /import\s+[\w.]+/g,
-        (match) => `${match}\n${importStatement}`
-      );
+    // 1. Idempotent Import Injection
+    if (!content.includes(IMPORT_STATEMENT)) {
+      const lines = content.split('\n');
+      const lastImportIndex = lines.findLastIndex(line => line.trim().startsWith('import '));
+      
+      if (lastImportIndex !== -1) {
+        lines.splice(lastImportIndex + 1, 0, IMPORT_STATEMENT);
+        content = lines.join('\n');
+      } else {
+        // Fallback: after package declaration
+        content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${IMPORT_STATEMENT}\n`);
+      }
     }
 
-    // 2. Add package to getPackages()
-    // Support both Kotlin and Java templates
-    const packageRegistration = "packages.add(AncsServicePackage())";
-    if (!content.includes(packageRegistration)) {
-      // Look for the end of the package list or the return statement
-      if (content.includes("val packages = PackageList(this).packages.toMutableList()")) {
-        // Kotlin template (Expo 50+)
-        content = content.replace(
-          /val packages = PackageList\(this\)\.packages\.toMutableList\(\)/,
-          (match) => `${match}\n      ${packageRegistration}`
-        );
-      } else if (content.includes("List<ReactPackage> packages = new PackageList(this).getPackages();")) {
-        // Java template
-        content = content.replace(
-          /List<ReactPackage> packages = new PackageList\(this\)\.getPackages\(\);/,
-          (match) => `${match}\n      ${packageRegistration.replace("()", "")};`
+    // 2. Idempotent Package Registration
+    if (!content.includes(PACKAGE_NAME + "(")) {
+      const registration = isKotlin 
+        ? `      packages.add(${PACKAGE_NAME}())` 
+        : `      packages.add(new ${PACKAGE_NAME}());`;
+
+      // Resilient regex for various template variants
+      const kotlinRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?(?:\s+as\s+MutableList<ReactPackage>)?)/;
+      const javaRegex = /(List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);)/;
+
+      const regex = isKotlin ? kotlinRegex : javaRegex;
+
+      if (regex.test(content)) {
+        content = content.replace(regex, `$1\n${registration}`);
+      } else {
+        // Fail loudly if we can't find the insertion point
+        throw new Error(
+          `[withAncsForegroundService] Could not find package list initialization in ${isKotlin ? 'Kotlin' : 'Java'} MainApplication. ` +
+          `Please ensure your MainApplication follows standard Expo/React Native templates. ` +
+          `Snippet: ${content.substring(0, 500)}...`
         );
       }
     }
