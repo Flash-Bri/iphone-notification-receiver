@@ -3,12 +3,17 @@
  * 
  * This plugin adds the native Android foreground service implementation
  * for reliable background ANCS notification reception.
+ * 
+ * It handles:
+ * 1. AndroidManifest.xml permissions and service/receiver declarations
+ * 2. Copying native Kotlin source files
+ * 3. Patching MainApplication to register the AncsServicePackage
  */
 
 const {
   withAndroidManifest,
-  withMainActivity,
-  AndroidConfig,
+  withMainApplication,
+  withDangerousMod,
 } = require("@expo/config-plugins");
 const path = require("path");
 const fs = require("fs");
@@ -126,66 +131,118 @@ function addServiceAndReceiver(androidManifest) {
 }
 
 /**
- * Copy native Kotlin files to the Android project
+ * Patch MainApplication to register the AncsServicePackage
  */
-function copyNativeFiles(config, projectRoot) {
-  return (config) => {
-    const androidProjectPath = path.join(
-      projectRoot,
-      "android",
-      "app",
-      "src",
-      "main",
-      "java",
-      "space",
-      "manus",
-      "iphone",
-      "notification",
-      "receiver"
-    );
+function patchMainApplication(config) {
+  return withMainApplication(config, (config) => {
+    let content = config.modResults.contents;
 
-    // Create directory structure
-    if (!fs.existsSync(androidProjectPath)) {
-      fs.mkdirSync(androidProjectPath, { recursive: true });
+    // 1. Add import
+    const importStatement = "import space.manus.iphone.notification.receiver.AncsServicePackage";
+    if (!content.includes(importStatement)) {
+      // Add after other imports
+      content = content.replace(
+        /import\s+[\w.]+/g,
+        (match) => `${match}\n${importStatement}`
+      );
     }
 
-    // Native files to copy
-    const nativeFiles = [
-      "AncsForegroundService.kt",
-      "AncsBluetoothManager.kt",
-      "AncsServiceModule.kt",
-      "AncsServicePackage.kt",
-      "BootReceiver.kt",
-    ];
-
-    const pluginDir = path.join(projectRoot, "plugins", "native-android");
-
-    nativeFiles.forEach((file) => {
-      const sourcePath = path.join(pluginDir, file);
-      const destPath = path.join(androidProjectPath, file);
-
-      if (fs.existsSync(sourcePath)) {
-        fs.copyFileSync(sourcePath, destPath);
-        console.log(`✓ Copied ${file} to Android project`);
-      } else {
-        console.warn(`⚠ Native file not found: ${sourcePath}`);
+    // 2. Add package to getPackages()
+    // Support both Kotlin and Java templates
+    const packageRegistration = "packages.add(AncsServicePackage())";
+    if (!content.includes(packageRegistration)) {
+      // Look for the end of the package list or the return statement
+      if (content.includes("val packages = PackageList(this).packages.toMutableList()")) {
+        // Kotlin template (Expo 50+)
+        content = content.replace(
+          /val packages = PackageList\(this\)\.packages\.toMutableList\(\)/,
+          (match) => `${match}\n      ${packageRegistration}`
+        );
+      } else if (content.includes("List<ReactPackage> packages = new PackageList(this).getPackages();")) {
+        // Java template
+        content = content.replace(
+          /List<ReactPackage> packages = new PackageList\(this\)\.getPackages\(\);/,
+          (match) => `${match}\n      ${packageRegistration.replace("()", "")};`
+        );
       }
-    });
+    }
 
+    config.modResults.contents = content;
     return config;
-  };
+  });
+}
+
+/**
+ * Copy native Kotlin files to the Android project
+ */
+function withNativeFiles(config) {
+  return withDangerousMod(config, [
+    "android",
+    async (config) => {
+      const projectRoot = config.modRequest.projectRoot;
+      const androidProjectPath = path.join(
+        projectRoot,
+        "android",
+        "app",
+        "src",
+        "main",
+        "java",
+        "space",
+        "manus",
+        "iphone",
+        "notification",
+        "receiver"
+      );
+
+      // Create directory structure
+      if (!fs.existsSync(androidProjectPath)) {
+        fs.mkdirSync(androidProjectPath, { recursive: true });
+      }
+
+      // Native files to copy
+      const nativeFiles = [
+        "AncsForegroundService.kt",
+        "AncsBluetoothManager.kt",
+        "AncsServiceModule.kt",
+        "AncsServicePackage.kt",
+        "BootReceiver.kt",
+      ];
+
+      const pluginDir = path.join(projectRoot, "plugins", "native-android");
+
+      nativeFiles.forEach((file) => {
+        const sourcePath = path.join(pluginDir, file);
+        const destPath = path.join(androidProjectPath, file);
+
+        if (fs.existsSync(sourcePath)) {
+          fs.copyFileSync(sourcePath, destPath);
+          console.log(`✓ Copied ${file} to Android project`);
+        } else {
+          console.warn(`⚠ Native file not found: ${sourcePath}`);
+        }
+      });
+
+      return config;
+    },
+  ]);
 }
 
 /**
  * Main plugin function
  */
 const withAncsForegroundService = (config) => {
-  // Add permissions
+  // 1. Add permissions and service/receiver to AndroidManifest
   config = withAndroidManifest(config, (config) => {
     config.modResults = addPermissions(config.modResults);
     config.modResults = addServiceAndReceiver(config.modResults);
     return config;
   });
+
+  // 2. Patch MainApplication to register the package
+  config = patchMainApplication(config);
+
+  // 3. Copy native files
+  config = withNativeFiles(config);
 
   return config;
 };
