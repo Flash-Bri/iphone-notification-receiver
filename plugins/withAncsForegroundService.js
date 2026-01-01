@@ -171,10 +171,16 @@ function patchMainApplication(config) {
         content = content.replace(regex, `$1\n${registration}`);
       } else {
         // Fail loudly if we can't find the insertion point
+        const patternTried = isKotlin 
+          ? "/(val\\s+packages\\s*=\\s*PackageList\\(this\\)\\.packages(?:\\.toMutableList\\(\\))?(?:\\s+as\\s+MutableList<ReactPackage>)?)/"
+          : "/(List<ReactPackage>\\s+packages\\s*=\\s*new\\s+PackageList\\(this\\)\\.getPackages\\(\\);)/";
+          
         throw new Error(
-          `[withAncsForegroundService] Could not find package list initialization in ${isKotlin ? 'Kotlin' : 'Java'} MainApplication. ` +
-          `Please ensure your MainApplication follows standard Expo/React Native templates. ` +
-          `Snippet: ${content.substring(0, 500)}...`
+          `[withAncsForegroundService] FAILED TO PATCH MainApplication.${isKotlin ? 'kt' : 'java'}\n` +
+          `REASON: Could not find the package list initialization insertion point.\n` +
+          `PATTERN TRIED: ${patternTried}\n` +
+          `SUGGESTION: Ensure your MainApplication follows standard Expo/React Native templates. ` +
+          `If you have a custom template, you may need to manually add 'packages.add(${isKotlin ? 'AncsServicePackage()' : 'new AncsServicePackage()'})' to your getPackages() method.`
         );
       }
     }
