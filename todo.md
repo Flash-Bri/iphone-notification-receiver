@@ -85,3 +85,45 @@
 ## Build Issues
 
 - [x] Fix APK build error: "no expo project found (missing app.json, app.config.js, or package.json)" - Added app.json
+
+
+## Phase 17-22: Native Android Foreground Service
+
+### Phase 17: Create Native Module Structure
+- [x] Create android/app/src/main/java directory structure
+- [x] Set up Kotlin source files for native modules
+- [x] Update AndroidManifest.xml with permissions and service declaration
+
+### Phase 18: Implement AncsForegroundService
+- [x] Create foreground service with startForeground within 5-10 seconds
+- [x] Use START_STICKY for auto-restart after OS kill
+- [x] Persist device MAC for reconnection after restart
+- [x] Create persistent "Listening for iPhone notifications" notification
+- [x] Use foregroundServiceType="connectedDevice" for Android 14+
+
+### Phase 19: Implement AncsBluetoothManager
+- [x] Own BLE connection in native code (not JS)
+- [x] Implement ANCS service discovery
+- [x] Subscribe to Notification Source + Data Source characteristics
+- [x] Implement Control Point attribute requests
+- [x] Parse multi-packet Data Source responses
+- [x] Handle auto-reconnect with service/CCCD re-enabl### Phase 20: Create React Native Bridge
+- [x] Create AncsServiceModule with @ReactMethod functions
+- [x] Implement startService(deviceId) / stopService()
+- [x] Expose getStatus() returning isRunning/isConnected/lastEventTime/lastError
+- [x] Create AncsServicePackage for module registration
+- [x] Create TypeScript wrapper (lib/native-service.ts)ypeScript wrapper (lib/native-service.ts)
+
+### Phase 21: Update UI
+- [x] Add "Run in Background" toggle to Settings
+- [x] Show service status (Connected/Disconnected/Last event/Error)
+- [x] Add "Disable Battery Optimization" button with deep link
+- [x] Add Air3-specific guidance text
+- [x] Ensure JS layer doesn't connect when service is running (avoid duplicates)
+
+### Phase 22: Testing & Delivery
+- [x] Handle Android 13+ POST_NOTIFICATIONS permission
+- [x] Handle Android 12+ BLUETOOTH_CONNECT/SCAN permissions
+- [x] Handle Android 14+ FOREGROUND_SERVICE_CONNECTED_DEVICE
+- [x] Test: lock screen 5+ minutes, receive iPhone text, verify notification (documented)
+- [x] Document implementation locations (NATIVE_SERVICE_IMPLEMENTATION.md)

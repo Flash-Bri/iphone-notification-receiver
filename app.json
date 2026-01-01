@@ -2,7 +2,7 @@
   "expo": {
     "name": "iPhone Notifications",
     "slug": "iphone-notification-receiver",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "manus20241231115717",

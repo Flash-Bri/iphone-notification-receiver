@@ -34,6 +34,10 @@ const MAPPING = {
   "trash": "delete",
   "bug": "bug-report",
   "arrow.clockwise": "refresh",
+  "play.fill": "play-arrow",
+  "bolt.fill": "bolt",
+  "battery.100": "battery-full",
+  "info.circle.fill": "info",
 } as const;
 
 type IconSymbolName = keyof typeof MAPPING;
