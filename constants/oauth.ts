@@ -1,11 +1,6 @@
 import * as Linking from "expo-linking";
 import * as ReactNative from "react-native";
-
-// Extract scheme from bundle ID (last segment timestamp, prefixed with "manus")
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const bundleId = "space.manus.iphone.notification.receiver.t20251231115707";
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
+import { bundleId, schemeFromBundleId } from "../app.config";
 
 const env = {
   portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? "",

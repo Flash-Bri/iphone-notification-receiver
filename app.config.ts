@@ -4,11 +4,11 @@ import type { ExpoConfig } from "expo/config";
 
 // Bundle ID format: space.manus.<project_name_dots>.<timestamp>
 // e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-const bundleId = "space.manus.iphone.notification.receiver.t20241231115717";
+export const bundleId = "space.manus.iphone.notification.receiver.t20241231115717";
 // Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
 // e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
 const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
+export const schemeFromBundleId = `manus${timestamp}`;
 
 const env = {
   // App branding - update these values directly (do not use env vars)
@@ -115,6 +115,7 @@ const config: ExpoConfig = {
         },
       },
     ],
+    "./plugins/withAncsForegroundService.js",
   ],
   experiments: {
     typedRoutes: true,

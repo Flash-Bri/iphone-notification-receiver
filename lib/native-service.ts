@@ -42,7 +42,7 @@ const AncsServiceModule: AncsServiceModuleInterface | null =
  * Check if the native service module is available.
  */
 export function isNativeServiceAvailable(): boolean {
-  return AncsServiceModule !== null;
+  return !!AncsServiceModule;
 }
 
 /**
