@@ -50,6 +50,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withAncsForegroundService",
       "expo-router",
       [
         "expo-audio",

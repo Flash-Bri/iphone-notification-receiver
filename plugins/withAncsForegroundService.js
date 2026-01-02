@@ -177,7 +177,7 @@ function patchMainApplication(config) {
       if (valRegex.test(content)) {
         content = content.replace(valRegex, (match, p1) => {
           const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-          return `${base}.apply { add(${PACKAGE_NAME}()) }`;
+          return `${base}${registration}`;
         });
       } else {
         // 2. Match 'return PackageList(this).packages...'
@@ -185,7 +185,7 @@ function patchMainApplication(config) {
         if (returnRegex.test(content)) {
           content = content.replace(returnRegex, (match, p1) => {
             const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-            return `${base}.apply { add(${PACKAGE_NAME}()) }`;
+            return `${base}${registration}`;
           });
         } else {
           // 3. Match expression body 'override fun getPackages(): List<ReactPackage> = PackageList(this).packages...'
@@ -193,7 +193,7 @@ function patchMainApplication(config) {
           if (expressionRegex.test(content)) {
             content = content.replace(expressionRegex, (match, p1) => {
               const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-              return `${base}.apply { add(${PACKAGE_NAME}()) }`;
+              return `${base}${registration}`;
             });
           } else {
             throw new Error(
