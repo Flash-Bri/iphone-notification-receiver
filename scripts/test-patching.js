@@ -1,11 +1,12 @@
 /**
- * Test script for MainApplication patching logic
+ * Test script for Universal MainApplication patching logic
  */
 
 const BASE_IMPORT = "import space.manus.iphone.notification.receiver.AncsServicePackage";
 const PACKAGE_NAME = "AncsServicePackage";
 
-function patchContent(content, isKotlin) {
+function patchContent(content, filePath) {
+  const isKotlin = filePath.endsWith('.kt');
   const importStatement = isKotlin ? BASE_IMPORT : `${BASE_IMPORT};`;
 
   // 1. Idempotent Import Injection
@@ -22,89 +23,118 @@ function patchContent(content, isKotlin) {
       content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${importStatement}\n`);
     }
   } else if (!isKotlin && !content.includes(`${BASE_IMPORT};`)) {
-    // Fix missing semicolon in Java
     content = content.replace(importRegex, `${importStatement}\n`);
   }
 
   // 2. Idempotent Package Registration
-  if (!content.includes(PACKAGE_NAME + "(")) {
-    const registration = isKotlin 
-      ? `      packages.add(${PACKAGE_NAME}())` 
-      : `      packages.add(new ${PACKAGE_NAME}());`;
-
-    const kotlinRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?(?:\s+as\s+MutableList<ReactPackage>)?)/;
-    const javaRegex = /(List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);)/;
-
-    const regex = isKotlin ? kotlinRegex : javaRegex;
-
-    if (regex.test(content)) {
-      content = content.replace(regex, `$1\n${registration}`);
-    } else {
-      throw new Error(`Could not find package list initialization in ${isKotlin ? 'Kotlin' : 'Java'} MainApplication.`);
-    }
+  if (content.includes(PACKAGE_NAME + "(")) {
+    return content; // Already registered
   }
 
-  return content;
+  if (isKotlin) {
+    // Kotlin Universal Patching
+    const registration = `.apply { add(${PACKAGE_NAME}()) }`;
+    
+    // 1. Match 'val packages = PackageList(this).packages...'
+    const valRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?)(?=\n|\s+return|\s+as)/;
+    if (valRegex.test(content)) {
+      return content.replace(valRegex, (match, p1) => {
+        const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+        return `${base}${registration}`;
+      });
+    }
+
+    // 2. Match 'return PackageList(this).packages...'
+    const returnRegex = /(return\s+PackageList\(this\)\.packages(?:\.toMutableList\(\))?)(?=\n|;|\s+as)/;
+    if (returnRegex.test(content)) {
+      return content.replace(returnRegex, (match, p1) => {
+        const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+        return `${base}${registration}`;
+      });
+    }
+
+    // 3. Match expression body 'override fun getPackages(): List<ReactPackage> = PackageList(this).packages...'
+    const expressionRegex = /(=(\s+)PackageList\(this\)\.packages(?:\.toMutableList\(\))?)/;
+    if (expressionRegex.test(content)) {
+      return content.replace(expressionRegex, (match, p1) => {
+        const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+        return `${base}${registration}`;
+      });
+    }
+
+    throw new Error(`[withAncsForegroundService] FAILED TO PATCH MainApplication.kt\nREASON: Could not find Kotlin package list insertion point.`);
+  } else {
+    // Java Universal Patching
+    // 1. Match 'List<ReactPackage> packages = new PackageList(this).getPackages();'
+    const listRegex = /List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);/;
+    if (listRegex.test(content)) {
+      return content.replace(listRegex, `List<ReactPackage> packages = new java.util.ArrayList<>(new PackageList(this).getPackages());\n      packages.add(new ${PACKAGE_NAME}());`);
+    }
+
+    // 2. Match 'return new PackageList(this).getPackages();'
+    const returnJavaRegex = /return\s+new\s+PackageList\(this\)\.getPackages\(\);/;
+    if (returnJavaRegex.test(content)) {
+      return content.replace(returnJavaRegex, `List<ReactPackage> packages = new java.util.ArrayList<>(new PackageList(this).getPackages());\n      packages.add(new ${PACKAGE_NAME}());\n      return packages;`);
+    }
+
+    throw new Error(`[withAncsForegroundService] FAILED TO PATCH MainApplication.java\nREASON: Could not find Java package list insertion point.`);
+  }
 }
 
 // Test Cases
-const kotlinTemplate = `package com.example.app
-import android.app.Application
-import com.facebook.react.PackageList
-
-class MainApplication : Application() {
-  override fun getPackages(): List<ReactPackage> {
-    val packages = PackageList(this).packages.toMutableList()
-    return packages
+const cases = [
+  {
+    name: "Kotlin val block-body",
+    file: "MainApplication.kt",
+    content: `override fun getPackages(): List<ReactPackage> {
+      val packages = PackageList(this).packages.toMutableList()
+      return packages
+    }`,
+    expected: "add(AncsServicePackage())"
+  },
+  {
+    name: "Kotlin direct-return",
+    file: "MainApplication.kt",
+    content: `override fun getPackages(): List<ReactPackage> {
+      return PackageList(this).packages
+    }`,
+    expected: ".apply { add(AncsServicePackage()) }"
+  },
+  {
+    name: "Kotlin expression-body",
+    file: "MainApplication.kt",
+    content: `override fun getPackages(): List<ReactPackage> = PackageList(this).packages`,
+    expected: ".apply { add(AncsServicePackage()) }"
+  },
+  {
+    name: "Java direct-return",
+    file: "MainApplication.java",
+    content: `protected List<ReactPackage> getPackages() {
+      return new PackageList(this).getPackages();
+    }`,
+    expected: "packages.add(new AncsServicePackage())"
   }
-}`;
-
-const javaTemplate = `package com.example.app;
-import android.app.Application;
-import java.util.List;
-
-public class MainApplication extends Application {
-  @Override
-  protected List<ReactPackage> getPackages() {
-    List<ReactPackage> packages = new PackageList(this).getPackages();
-    return packages;
-  }
-}`;
-
-const javaTemplateNoSemicolon = `package com.example.app;
-import android.app.Application;
-import space.manus.iphone.notification.receiver.AncsServicePackage
-import java.util.List;
-
-public class MainApplication extends Application {
-  @Override
-  protected List<ReactPackage> getPackages() {
-    List<ReactPackage> packages = new PackageList(this).getPackages();
-    return packages;
-  }
-}`;
+];
 
 try {
-  console.log("Testing Kotlin Template...");
-  let res = patchContent(kotlinTemplate, true);
-  if (!res.includes(BASE_IMPORT)) throw new Error("Kotlin import missing");
-  if (res.includes(BASE_IMPORT + ";")) throw new Error("Kotlin import should not have semicolon");
-  
-  console.log("Testing Java Template...");
-  let resJava = patchContent(javaTemplate, false);
-  if (!resJava.includes(BASE_IMPORT + ";")) throw new Error("Java import missing semicolon");
+  cases.forEach(c => {
+    console.log(`Testing ${c.name}...`);
+    const res = patchContent(c.content, c.file);
+    if (!res.includes(c.expected)) {
+      console.error(`Failed ${c.name}`);
+      console.error("Result:", res);
+      throw new Error(`Expected registration not found in ${c.name}`);
+    }
+  });
 
-  console.log("Testing Java Normalization (fixing missing semicolon)...");
-  let resJavaFix = patchContent(javaTemplateNoSemicolon, false);
-  if (!resJavaFix.includes(BASE_IMPORT + ";")) throw new Error("Java normalization failed to add semicolon");
-  const count = (resJavaFix.match(new RegExp(BASE_IMPORT, 'g')) || []).length;
-  if (count !== 1) throw new Error("Java normalization duplicated import");
+  console.log("\nTesting Idempotency...");
+  const initial = cases[0].content;
+  const first = patchContent(initial, "MainApplication.kt");
+  const second = patchContent(first, "MainApplication.kt");
+  const count = (second.match(/AncsServicePackage/g) || []).length;
+  if (count !== 1) throw new Error("Idempotency failed: duplicated registration");
 
-  console.log("Testing Idempotency...");
-  let resIdem = patchContent(res, true);
-  if ((resIdem.match(new RegExp(BASE_IMPORT, 'g')) || []).length !== 1) throw new Error("Kotlin import duplicated");
-
-  console.log("\nAll tests passed!");
+  console.log("\nAll universal patching tests passed!");
 } catch (e) {
   console.error("Test failed:", e.message);
   process.exit(1);

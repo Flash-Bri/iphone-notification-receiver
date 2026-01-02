@@ -7,7 +7,7 @@
  * It handles:
  * 1. AndroidManifest.xml permissions and service/receiver declarations
  * 2. Copying native Kotlin source files
- * 3. Patching MainApplication to register the AncsServicePackage (Robust & Idempotent)
+ * 3. Universal & Robust Patching of MainApplication (Kotlin/Java)
  */
 
 const {
@@ -139,11 +139,11 @@ function addServiceAndReceiver(androidManifest) {
 function patchMainApplication(config) {
   return withMainApplication(config, (config) => {
     let content = config.modResults.contents;
-    const isKotlin = config.modResults.language === 'kt' || content.includes('class MainApplication : Application');
+    const filePath = config.modResults.path;
+    const isKotlin = filePath.endsWith('.kt');
     const importStatement = isKotlin ? BASE_IMPORT : `${BASE_IMPORT};`;
 
     // 1. Idempotent Import Injection
-    // Match import with or without semicolon and varying whitespace
     const importRegex = new RegExp(`import\\s+space\\.manus\\.iphone\\.notification\\.receiver\\.AncsServicePackage;?\\s*`, 'g');
     
     if (!importRegex.test(content)) {
@@ -163,32 +163,66 @@ function patchMainApplication(config) {
     }
 
     // 2. Idempotent Package Registration
-    if (!content.includes(PACKAGE_NAME + "(")) {
-      const registration = isKotlin 
-        ? `      packages.add(${PACKAGE_NAME}())` 
-        : `      packages.add(new ${PACKAGE_NAME}());`;
+    if (content.includes(PACKAGE_NAME + "(")) {
+      return config; // Already registered
+    }
 
-      // Resilient regex for various template variants
-      const kotlinRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?(?:\s+as\s+MutableList<ReactPackage>)?)/;
-      const javaRegex = /(List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);)/;
-
-      const regex = isKotlin ? kotlinRegex : javaRegex;
-
-      if (regex.test(content)) {
-        content = content.replace(regex, `$1\n${registration}`);
+    if (isKotlin) {
+      // Kotlin Universal Patching
+      const registration = `.apply { add(${PACKAGE_NAME}()) }`;
+      
+      // 1. Match 'val packages = PackageList(this).packages...'
+      const valRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?)(?=\n|\s+return|\s+as)/;
+      if (valRegex.test(content)) {
+        content = content.replace(valRegex, (match, p1) => {
+          const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+          return `${base}${registration}`;
+        });
       } else {
-        // Fail loudly if we can't find the insertion point
-        const patternTried = isKotlin 
-          ? "/(val\\s+packages\\s*=\\s*PackageList\\(this\\)\\.packages(?:\\.toMutableList\\(\\))?(?:\\s+as\\s+MutableList<ReactPackage>)?)/"
-          : "/(List<ReactPackage>\\s+packages\\s*=\\s*new\\s+PackageList\\(this\\)\\.getPackages\\(\\);)/";
-          
-        throw new Error(
-          `[withAncsForegroundService] FAILED TO PATCH MainApplication.${isKotlin ? 'kt' : 'java'}\n` +
-          `REASON: Could not find the package list initialization insertion point.\n` +
-          `PATTERN TRIED: ${patternTried}\n` +
-          `SUGGESTION: Ensure your MainApplication follows standard Expo/React Native templates. ` +
-          `If you have a custom template, you may need to manually add 'packages.add(${isKotlin ? 'AncsServicePackage()' : 'new AncsServicePackage()'})' to your getPackages() method.`
-        );
+        // 2. Match 'return PackageList(this).packages...'
+        const returnRegex = /(return\s+PackageList\(this\)\.packages(?:\.toMutableList\(\))?)(?=\n|;|\s+as)/;
+        if (returnRegex.test(content)) {
+          content = content.replace(returnRegex, (match, p1) => {
+            const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+            return `${base}${registration}`;
+          });
+        } else {
+          // 3. Match expression body 'override fun getPackages(): List<ReactPackage> = PackageList(this).packages...'
+          const expressionRegex = /(=(\s+)PackageList\(this\)\.packages(?:\.toMutableList\(\))?)/;
+          if (expressionRegex.test(content)) {
+            content = content.replace(expressionRegex, (match, p1) => {
+              const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
+              return `${base}${registration}`;
+            });
+          } else {
+            throw new Error(
+              `[withAncsForegroundService] FAILED TO PATCH MainApplication.kt\n` +
+              `REASON: Could not find Kotlin package list insertion point.\n` +
+              `EXPECTED: One of 'val packages = ...', 'return PackageList...', or '= PackageList...'\n` +
+              `SNIPPET: ${content.substring(0, 500)}...`
+            );
+          }
+        }
+      }
+    } else {
+      // Java Universal Patching
+      // 1. Match 'List<ReactPackage> packages = new PackageList(this).getPackages();'
+      const listRegex = /List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);/;
+      if (listRegex.test(content)) {
+        content = content.replace(listRegex, `List<ReactPackage> packages = new java.util.ArrayList<>(new PackageList(this).getPackages());\n      packages.add(new ${PACKAGE_NAME}());`);
+      } else {
+        // 2. Match 'return new PackageList(this).getPackages();'
+        const returnJavaRegex = /return\s+new\s+PackageList\(this\)\.getPackages\(\);/;
+        if (returnJavaRegex.test(content)) {
+          content = content.replace(returnJavaRegex, `List<ReactPackage> packages = new java.util.ArrayList<>(new PackageList(this).getPackages());\n      packages.add(new ${PACKAGE_NAME}());\n      return packages;`);
+        } else {
+          throw new Error(
+            `[withAncsForegroundService] FAILED TO PATCH MainApplication.java\n` +
+            `REASON: Could not find Java package list insertion point.\n` +
+            `EXPECTED: 'List<ReactPackage> packages = ...' or 'return new PackageList(this).getPackages();'\n` +
+            `SNIPPET: ${content.substring(0, 500)}...`
+          );
+        }
       }
     }
 
