@@ -193,7 +193,7 @@ export default function SettingsScreen() {
         {/* Background Service Section (Android only) */}
         {isAndroid && (
           <View className="px-4 pt-6">
-            <Text className="text-sm font-semibold text-muted uppercase mb-3">Background Service</Text>
+            <Text className="text-sm font-semibold text-muted uppercase mb-3">Background Service (Required for Reliability)</Text>
 
             <View className="bg-surface rounded-2xl overflow-hidden border border-border">
               {/* Run in Background Toggle */}
@@ -307,7 +307,7 @@ export default function SettingsScreen() {
 
         {/* Notification Preferences */}
         <View className="px-4 pt-6">
-          <Text className="text-sm font-semibold text-muted uppercase mb-3">Notification Preferences</Text>
+          <Text className="text-sm font-semibold text-muted uppercase mb-3">Notification Preferences (Android)</Text>
 
           <View className="bg-surface rounded-2xl overflow-hidden border border-border">
             {/* Sound Toggle */}
@@ -349,7 +349,7 @@ export default function SettingsScreen() {
         {/* Permissions Section (Android only) */}
         {isAndroid && permissions && (
           <View className="px-4 pt-6">
-            <Text className="text-sm font-semibold text-muted uppercase mb-3">Permissions</Text>
+            <Text className="text-sm font-semibold text-muted uppercase mb-3">Android Permissions</Text>
 
             <View className="bg-surface rounded-2xl overflow-hidden border border-border">
               <Pressable
@@ -380,7 +380,7 @@ export default function SettingsScreen() {
 
         {/* About Section */}
         <View className="px-4 pt-6">
-          <Text className="text-sm font-semibold text-muted uppercase mb-3">About</Text>
+          <Text className="text-sm font-semibold text-muted uppercase mb-3">About This App</Text>
 
           <View className="bg-surface rounded-2xl px-4 py-4 border border-border">
             <View className="flex-row items-center gap-3 mb-3">
@@ -399,45 +399,58 @@ export default function SettingsScreen() {
 
         {/* Setup Instructions */}
         <View className="px-4 pt-6 pb-6">
-          <Text className="text-sm font-semibold text-muted uppercase mb-3">Setup Instructions</Text>
+          <Text className="text-sm font-semibold text-muted uppercase mb-3">Setup Guide for First-Time Users</Text>
 
           <View className="bg-surface rounded-2xl px-4 py-4 border border-border">
-            <View className="gap-3">
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">1.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Open Bluetooth settings on your iPhone
-                </Text>
+            <View className="gap-4">
+              <Text className="text-base font-semibold text-foreground">Part 1: iPhone Setup (ANCS Pairing)</Text>
+              <View className="gap-3">
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">1.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    On your iPhone, go to <Text className="font-bold">Settings → Bluetooth</Text>.
+                  </Text>
+                </View>
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">2.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    Pair your Android device with your iPhone.
+                  </Text>
+                </View>
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">3.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    Tap the <Text className="font-bold">(i)</Text> icon next to your Android device's name in the Bluetooth list.
+                  </Text>
+                </View>
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">4.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    <Text className="font-bold">Crucial Step:</Text> Enable the toggle for <Text className="font-bold">"Share System Notifications"</Text>.
+                  </Text>
+                </View>
               </View>
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">2.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Pair your Android tablet with your iPhone
-                </Text>
-              </View>
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">3.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Tap the (i) icon next to your tablet's name
-                </Text>
-              </View>
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">4.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Enable "Share System Notifications"
-                </Text>
-              </View>
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">5.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Connect to your iPhone from the Home screen
-                </Text>
-              </View>
-              <View className="flex-row gap-3">
-                <Text className="text-base font-semibold text-primary">6.</Text>
-                <Text className="text-sm text-foreground flex-1 leading-relaxed">
-                  Enable "Run in Background" above for notifications when app is closed
-                </Text>
+
+              <Text className="text-base font-semibold text-foreground mt-4">Part 2: Android App Activation</Text>
+              <View className="gap-3">
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">5.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    Go to the <Text className="font-bold">Home screen</Text> of this app and tap the <Text className="font-bold">Connect</Text> button to establish the ANCS connection.
+                  </Text>
+                </View>
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">6.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    For reliable background operation, enable <Text className="font-bold">"Run in Background"</Text> above.
+                  </Text>
+                </View>
+                <View className="flex-row gap-3">
+                  <Text className="text-base font-semibold text-primary">7.</Text>
+                  <Text className="text-sm text-foreground flex-1 leading-relaxed">
+                    Ensure <Text className="font-bold">Battery Optimization</Text> is disabled (tap the button above to request this setting).
+                  </Text>
+                </View>
               </View>
             </View>
           </View>
