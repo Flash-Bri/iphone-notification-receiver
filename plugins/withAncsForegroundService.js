@@ -153,9 +153,10 @@ function patchMainApplication(config) {
       if (lastImportIndex !== -1) {
         lines.splice(lastImportIndex + 1, 0, importStatement);
         content = lines.join('\n');
-      } else {
-        // Fallback: after package declaration
+      } else if (content.includes('package ')) {
         content = content.replace(/(package\s+[\w.]+;?\n)/, `$1\n${importStatement}\n`);
+      } else {
+        content = `${importStatement}\n${content}`;
       }
     } else if (!isKotlin && !content.includes(`${BASE_IMPORT};`)) {
       // Fix missing semicolon in Java
@@ -168,15 +169,15 @@ function patchMainApplication(config) {
     }
 
     if (isKotlin) {
-      // Kotlin Universal Patching
-      const registration = `.apply { add(${PACKAGE_NAME}()) }`;
+      // Kotlin Robust Patching
+      const registration = `.toMutableList().apply { add(${PACKAGE_NAME}()) }`;
       
       // 1. Match 'val packages = PackageList(this).packages...'
       const valRegex = /(val\s+packages\s*=\s*PackageList\(this\)\.packages(?:\.toMutableList\(\))?)(?=\n|\s+return|\s+as)/;
       if (valRegex.test(content)) {
         content = content.replace(valRegex, (match, p1) => {
           const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-          return `${base}${registration}`;
+          return `${base}.apply { add(${PACKAGE_NAME}()) }`;
         });
       } else {
         // 2. Match 'return PackageList(this).packages...'
@@ -184,7 +185,7 @@ function patchMainApplication(config) {
         if (returnRegex.test(content)) {
           content = content.replace(returnRegex, (match, p1) => {
             const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-            return `${base}${registration}`;
+            return `${base}.apply { add(${PACKAGE_NAME}()) }`;
           });
         } else {
           // 3. Match expression body 'override fun getPackages(): List<ReactPackage> = PackageList(this).packages...'
@@ -192,20 +193,20 @@ function patchMainApplication(config) {
           if (expressionRegex.test(content)) {
             content = content.replace(expressionRegex, (match, p1) => {
               const base = p1.includes('.toMutableList()') ? p1 : `${p1}.toMutableList()`;
-              return `${base}${registration}`;
+              return `${base}.apply { add(${PACKAGE_NAME}()) }`;
             });
           } else {
             throw new Error(
               `[withAncsForegroundService] FAILED TO PATCH MainApplication.kt\n` +
               `REASON: Could not find Kotlin package list insertion point.\n` +
               `EXPECTED: One of 'val packages = ...', 'return PackageList...', or '= PackageList...'\n` +
-              `SNIPPET: ${content.substring(0, 500)}...`
+              `CONTEXT:\n${getSurroundingContext(content, 'getPackages')}`
             );
           }
         }
       }
     } else {
-      // Java Universal Patching
+      // Java Robust Patching
       // 1. Match 'List<ReactPackage> packages = new PackageList(this).getPackages();'
       const listRegex = /List<ReactPackage>\s+packages\s*=\s*new\s+PackageList\(this\)\.getPackages\(\);/;
       if (listRegex.test(content)) {
@@ -220,7 +221,7 @@ function patchMainApplication(config) {
             `[withAncsForegroundService] FAILED TO PATCH MainApplication.java\n` +
             `REASON: Could not find Java package list insertion point.\n` +
             `EXPECTED: 'List<ReactPackage> packages = ...' or 'return new PackageList(this).getPackages();'\n` +
-            `SNIPPET: ${content.substring(0, 500)}...`
+            `CONTEXT:\n${getSurroundingContext(content, 'getPackages')}`
           );
         }
       }
@@ -229,6 +230,19 @@ function patchMainApplication(config) {
     config.modResults.contents = content;
     return config;
   });
+}
+
+/**
+ * Helper to get surrounding context for error messages
+ */
+function getSurroundingContext(content, searchString) {
+  const lines = content.split('\n');
+  const index = lines.findIndex(line => line.includes(searchString));
+  if (index === -1) return content.substring(0, 500);
+  
+  const start = Math.max(0, index - 10);
+  const end = Math.min(lines.length, index + 10);
+  return lines.slice(start, end).join('\n');
 }
 
 /**
