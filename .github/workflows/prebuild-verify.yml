@@ -17,8 +17,7 @@ jobs:
         with:
           node-version: 22
 
-      # Use Corepack so pnpm version comes from package.json "packageManager"
-      - name: Enable Corepack + install pinned pnpm
+      - name: Enable Corepack + use repo’s pinned pnpm
         run: |
           corepack enable
           corepack install
